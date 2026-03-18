@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { PublicSettings, SecretSaveState, SettingsTab } from "../../appTypes";
+import { PublicSettings, SecretSaveState, SettingsTab, TextEditorAppOption, TextEditorAppsResponse } from "../../appTypes";
 import { validateSettings } from "../../lib/validation";
 import { tauriInvoke } from "../../lib/tauri";
 
@@ -7,6 +7,15 @@ type UseSettingsFormOptions = {
   isTrayWindow: boolean;
   setStatus: (status: string) => void;
 };
+
+const frontendFallbackEditors: TextEditorAppOption[] = [
+  { id: "TextEdit", name: "TextEdit", icon_fallback: "📝", icon_data_url: null },
+  { id: "Visual Studio Code", name: "Visual Studio Code", icon_fallback: "💠", icon_data_url: null },
+  { id: "Sublime Text", name: "Sublime Text", icon_fallback: "🟧", icon_data_url: null },
+  { id: "Cursor", name: "Cursor", icon_fallback: "🧩", icon_data_url: null },
+  { id: "Windsurf", name: "Windsurf", icon_fallback: "🧩", icon_data_url: null },
+  { id: "Zed", name: "Zed", icon_fallback: "🧩", icon_data_url: null },
+];
 
 export function useSettingsForm({ isTrayWindow, setStatus }: UseSettingsFormOptions) {
   const [settings, setSettings] = useState<PublicSettings | null>(null);
@@ -16,7 +25,7 @@ export function useSettingsForm({ isTrayWindow, setStatus }: UseSettingsFormOpti
   const [nexaraSecretState, setNexaraSecretState] = useState<SecretSaveState>("unknown");
   const [openaiSecretState, setOpenaiSecretState] = useState<SecretSaveState>("unknown");
   const [audioDevices, setAudioDevices] = useState<string[]>([]);
-  const [textEditorApps, setTextEditorApps] = useState<string[]>([]);
+  const [textEditorApps, setTextEditorApps] = useState<TextEditorAppOption[]>([]);
   const [textEditorAppsLoaded, setTextEditorAppsLoaded] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("audiototext");
 
@@ -116,15 +125,33 @@ export function useSettingsForm({ isTrayWindow, setStatus }: UseSettingsFormOpti
     if (isTrayWindow) return;
     if (settingsTab !== "generals" || textEditorAppsLoaded) return;
     let active = true;
-    tauriInvoke<unknown>("list_text_editor_apps")
+    let loadedSuccessfully = false;
+    tauriInvoke<TextEditorAppsResponse>("list_text_editor_apps")
       .then((result) => {
         if (!active) return;
-        const list = Array.isArray(result) ? result.filter((v): v is string => typeof v === "string") : [];
+        const detected = Array.isArray(result?.apps) ? result.apps : [];
+        const list = detected.length > 0 ? detected : frontendFallbackEditors;
         setTextEditorApps(list);
+        loadedSuccessfully = true;
+        if (detected.length === 0) {
+          setStatus("error: системный список редакторов пуст, использован fallback");
+        }
+        setSettings((prev) =>
+          prev
+            ? {
+                ...prev,
+                artifact_open_app:
+                  prev.artifact_open_app?.trim() || result?.default_app_id || list[0]?.id || "",
+              }
+            : prev
+        );
       })
-      .catch(() => undefined)
+      .catch((err) => {
+        if (!active) return;
+        setStatus(`error: не удалось загрузить список редакторов (${String(err)})`);
+      })
       .finally(() => {
-        if (active) setTextEditorAppsLoaded(true);
+        if (active && loadedSuccessfully) setTextEditorAppsLoaded(true);
       });
     return () => {
       active = false;

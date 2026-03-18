@@ -22,6 +22,7 @@ ogg = "0.9"
 opus = "0.3"
 cpal = "0.16"
 tauri-plugin-global-shortcut = "2"
+base64 = "0.22"
 
 [features]
 default = []

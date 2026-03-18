@@ -28,7 +28,13 @@ const { invokeMock } = vi.hoisted(() => ({
       return ["Built-in Microphone", "BlackHole 2ch"];
     }
     if (cmd === "list_text_editor_apps") {
-      return ["Notepad", "Visual Studio Code", "Notepad++"];
+      return {
+        apps: [
+          { id: "textedit", name: "TextEdit", icon_fallback: "📝", icon_data_url: null },
+          { id: "visual_studio_code", name: "Visual Studio Code", icon_fallback: "💠", icon_data_url: null },
+        ],
+        default_app_id: "textedit",
+      };
     }
     return null;
   }),
@@ -194,13 +200,14 @@ describe("App settings window", () => {
     });
 
     await user.click(screen.getByRole("tab", { name: "Generals" }));
-    await user.selectOptions(screen.getByLabelText("Artifact opener app (optional)"), "Visual Studio Code");
+    await user.click(screen.getByRole("button", { name: "Artifact opener app (optional)" }));
+    await user.click(screen.getByRole("button", { name: "Visual Studio Code" }));
     await user.click(screen.getByRole("button", { name: "Save settings" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("save_public_settings", {
         payload: expect.objectContaining({
-          artifact_open_app: "Visual Studio Code",
+          artifact_open_app: "visual_studio_code",
         }),
       });
     });

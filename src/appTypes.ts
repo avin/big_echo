@@ -54,6 +54,18 @@ export type LiveInputLevels = { mic: number; system: number };
 export type SettingsTab = "audiototext" | "generals" | "audio";
 export type DeleteTarget = { sessionId: string; force: boolean };
 
+export type TextEditorAppOption = {
+  id: string;
+  name: string;
+  icon_fallback: string;
+  icon_data_url: string | null;
+};
+
+export type TextEditorAppsResponse = {
+  apps: TextEditorAppOption[];
+  default_app_id: string | null;
+};
+
 export const fixedSources = ["slack", "zoom", "telemost", "telegram", "browser", "facetime"];
 export const transcriptionTaskOptions = ["transcribe", "diarize"];
 export const diarizationSettingOptions = ["general", "meeting", "telephonic"];

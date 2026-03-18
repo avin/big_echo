@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fixedSources,
   diarizationSettingOptions,
@@ -14,9 +14,28 @@ import { useSettingsForm } from "./features/settings/useSettingsForm";
 import { formatSecretSaveState, splitParticipants } from "./lib/appUtils";
 import { getCurrentWindowLabel } from "./lib/tauri";
 import { formatAppStatus, formatSessionStatus } from "./status";
+import vscodeIcon from "./assets/editor-icons/vscode.svg";
+import cursorIcon from "./assets/editor-icons/cursor.svg";
+import sublimeIcon from "./assets/editor-icons/sublime.svg";
 const currentWindowLabel = getCurrentWindowLabel();
 const isSettingsWindow = currentWindowLabel === "settings";
 const isTrayWindow = currentWindowLabel === "tray";
+const openerUiFallback = [
+  { id: "TextEdit", name: "TextEdit", icon_fallback: "📝", icon_data_url: null },
+  { id: "Visual Studio Code", name: "Visual Studio Code", icon_fallback: "💠", icon_data_url: null },
+  { id: "Sublime Text", name: "Sublime Text", icon_fallback: "🟧", icon_data_url: null },
+  { id: "Cursor", name: "Cursor", icon_fallback: "🧩", icon_data_url: null },
+  { id: "Windsurf", name: "Windsurf", icon_fallback: "🧩", icon_data_url: null },
+  { id: "Zed", name: "Zed", icon_fallback: "🧩", icon_data_url: null },
+] as const;
+
+function localIconForEditor(editorName: string): string | null {
+  const lowered = editorName.toLowerCase();
+  if (lowered.includes("visual studio code") || lowered === "vscode") return vscodeIcon;
+  if (lowered.includes("cursor")) return cursorIcon;
+  if (lowered.includes("sublime")) return sublimeIcon;
+  return null;
+}
 
 export function App() {
   const [topic, setTopic] = useState("");
@@ -26,6 +45,8 @@ export function App() {
   const [session, setSession] = useState<StartResponse | null>(null);
   const [lastSessionId, setLastSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState("idle");
+  const [isOpenerDropdownOpen, setIsOpenerDropdownOpen] = useState(false);
+  const openerDropdownRef = useRef<HTMLDivElement | null>(null);
   const {
     audioDevices,
     autoDetectSystemSource,
@@ -100,8 +121,21 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const onDocumentMouseDown = (event: MouseEvent) => {
+      if (!isOpenerDropdownOpen) return;
+      if (!openerDropdownRef.current) return;
+      if (openerDropdownRef.current.contains(event.target as Node)) return;
+      setIsOpenerDropdownOpen(false);
+    };
+    document.addEventListener("mousedown", onDocumentMouseDown);
+    return () => document.removeEventListener("mousedown", onDocumentMouseDown);
+  }, [isOpenerDropdownOpen]);
+
   function renderSettingsFields() {
     if (!settings) return null;
+    const openerOptions = textEditorApps.length > 0 ? textEditorApps : openerUiFallback;
+    const selectedOpenerApp = openerOptions.find((app) => app.id === settings.artifact_open_app) ?? null;
     const snapshot = savedSettingsSnapshot;
     const isDirty = (field: keyof PublicSettings) => Boolean(snapshot && settings[field] !== snapshot[field]);
     const dirtyByTab: Record<SettingsTab, boolean> = {
@@ -252,20 +286,79 @@ export function App() {
                   onChange={(e) => setSettings({ ...settings, recording_root: e.target.value })}
                 />
               </label>
-              <label className="field">
-                Artifact opener app (optional)
-                <select
-                  value={settings.artifact_open_app ?? ""}
-                  onChange={(e) => setSettings({ ...settings, artifact_open_app: e.target.value })}
-                >
-                  <option value="">System default</option>
-                  {textEditorApps.map((editor) => (
-                    <option key={editor} value={editor}>
-                      {editor}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="field">
+                <span>Artifact opener app (optional)</span>
+                <div className="opener-dropdown" ref={openerDropdownRef}>
+                  <button
+                    type="button"
+                    className="opener-dropdown-trigger"
+                    aria-label="Artifact opener app (optional)"
+                    aria-haspopup="listbox"
+                    aria-expanded={isOpenerDropdownOpen}
+                    onClick={() => setIsOpenerDropdownOpen((prev) => !prev)}
+                  >
+                    {selectedOpenerApp ? (
+                      <>
+                        {(selectedOpenerApp.icon_data_url || localIconForEditor(selectedOpenerApp.name)) ? (
+                          <img
+                            className="opener-app-icon"
+                            src={selectedOpenerApp.icon_data_url || localIconForEditor(selectedOpenerApp.name) || ""}
+                            alt=""
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <span className="opener-app-fallback-icon" aria-hidden="true">
+                            {selectedOpenerApp.icon_fallback}
+                          </span>
+                        )}
+                        <span>{selectedOpenerApp.name}</span>
+                      </>
+                    ) : (
+                      <span>System default</span>
+                    )}
+                  </button>
+
+                  {isOpenerDropdownOpen && (
+                    <div className="opener-dropdown-menu" role="listbox" aria-label="Artifact opener app options">
+                      <button
+                        type="button"
+                        className={`opener-dropdown-option${settings.artifact_open_app === "" ? " is-active" : ""}`}
+                        onClick={() => {
+                          setSettings({ ...settings, artifact_open_app: "" });
+                          setIsOpenerDropdownOpen(false);
+                        }}
+                      >
+                        <span>System default</span>
+                      </button>
+                      {openerOptions.map((editor) => (
+                        <button
+                          key={editor.id}
+                          type="button"
+                          className={`opener-dropdown-option${settings.artifact_open_app === editor.id ? " is-active" : ""}`}
+                          onClick={() => {
+                            setSettings({ ...settings, artifact_open_app: editor.id });
+                            setIsOpenerDropdownOpen(false);
+                          }}
+                        >
+                          {(editor.icon_data_url || localIconForEditor(editor.name)) ? (
+                            <img
+                              className="opener-app-icon"
+                              src={editor.icon_data_url || localIconForEditor(editor.name) || ""}
+                              alt=""
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <span className="opener-app-fallback-icon" aria-hidden="true">
+                              {editor.icon_fallback}
+                            </span>
+                          )}
+                          <span>{editor.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
               <label className="field">
                 <span>Auto-run pipeline on Stop</span>
                 <input

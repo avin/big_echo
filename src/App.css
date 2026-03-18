@@ -349,6 +349,81 @@ select {
   color: #1d2026;
 }
 
+.opener-dropdown {
+  position: relative;
+}
+
+.opener-dropdown-trigger {
+  width: 100%;
+  border: 1px solid #c5c6ca;
+  background: #ffffff;
+  border-radius: 10px;
+  min-height: 38px;
+  padding: 8px 10px;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: #2e3138;
+}
+
+.opener-dropdown-trigger:focus {
+  border-color: #5f8dd3;
+  outline: 2px solid rgba(95, 141, 211, 0.22);
+}
+
+.opener-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 12;
+  border: 1px solid #cdced3;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(18, 20, 27, 0.16);
+  padding: 4px;
+  display: grid;
+  gap: 2px;
+}
+
+.opener-dropdown-option {
+  border: 0;
+  background: #ffffff;
+  border-radius: 8px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  color: #2e3138;
+  cursor: pointer;
+  text-align: left;
+}
+
+.opener-dropdown-option:hover {
+  background: #f1f4fb;
+}
+
+.opener-dropdown-option.is-active {
+  background: #e8eefb;
+}
+
+.opener-app-icon,
+.opener-app-fallback-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.opener-app-icon {
+  border-radius: 4px;
+  object-fit: cover;
+}
+
 .field textarea {
   border: 1px solid #c8c8cd;
   background: #ffffff;
