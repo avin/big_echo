@@ -1,3 +1,4 @@
+use crate::text_editors::default_text_editor_id;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ pub struct PublicSettings {
     pub opus_bitrate_kbps: u32,
     pub mic_device_name: String,
     pub system_device_name: String,
+    pub artifact_opener_app: String,
     pub auto_run_pipeline_on_stop: bool,
     pub api_call_logging_enabled: bool,
 }
@@ -33,6 +35,7 @@ impl Default for PublicSettings {
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: default_text_editor_id().unwrap_or_default().to_string(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         }
@@ -135,6 +138,10 @@ mod tests {
         let parsed: PublicSettings = serde_json::from_str(body).expect("settings should parse");
         assert!(!parsed.auto_run_pipeline_on_stop);
         assert!(!parsed.api_call_logging_enabled);
+        assert_eq!(
+            parsed.artifact_opener_app,
+            default_text_editor_id().unwrap_or_default().to_string()
+        );
     }
 
     #[test]

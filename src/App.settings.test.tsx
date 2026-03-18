@@ -16,8 +16,19 @@ const { invokeMock } = vi.hoisted(() => ({
         opus_bitrate_kbps: 24,
         mic_device_name: "",
         system_device_name: "",
+        artifact_opener_app: "",
         auto_run_pipeline_on_stop: false,
         api_call_logging_enabled: false,
+      };
+    }
+    if (cmd === "list_text_editor_apps") {
+      return {
+        apps: [
+          { id: "textedit", name: "TextEdit", icon_fallback: "📝", icon_data_url: null },
+          { id: "visual_studio_code", name: "Visual Studio Code", icon_fallback: "💠", icon_data_url: null },
+          { id: "vim", name: "Vim", icon_fallback: "⌨️", icon_data_url: null },
+        ],
+        default_app_id: "textedit",
       };
     }
     if (cmd === "detect_system_source_device") {
@@ -92,6 +103,21 @@ describe("App settings window", () => {
 
     expect(screen.queryByText("Неверный URL транскрибации")).not.toBeInTheDocument();
     expect(saveButton).toBeEnabled();
+  });
+
+  it("shows system text editors and selects platform default", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("list_text_editor_apps");
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Generals" }));
+    const openerButton = screen.getByRole("button", { name: "Artifact opener app (optional)" });
+    expect(openerButton).toHaveTextContent("TextEdit");
+    await user.click(openerButton);
+    expect(screen.getByRole("button", { name: "Visual Studio Code" })).toBeInTheDocument();
   });
 
   it("saves settings and api keys", async () => {
