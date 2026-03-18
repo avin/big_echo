@@ -7,6 +7,7 @@ use url::Url;
 #[serde(default)]
 pub struct PublicSettings {
     pub recording_root: String,
+    pub artifact_open_app: String,
     pub transcription_url: String,
     pub transcription_task: String,
     pub transcription_diarization_setting: String,
@@ -24,6 +25,7 @@ impl Default for PublicSettings {
     fn default() -> Self {
         Self {
             recording_root: "./recordings".to_string(),
+            artifact_open_app: String::new(),
             transcription_url: String::new(),
             transcription_task: "transcribe".to_string(),
             transcription_diarization_setting: "general".to_string(),
@@ -40,13 +42,20 @@ impl Default for PublicSettings {
 }
 
 impl PublicSettings {
+    fn parse_http_url(value: &str, field: &str) -> Result<(), String> {
+        let parsed = Url::parse(value).map_err(|_| format!("Invalid {field} URL"))?;
+        if parsed.scheme() != "http" && parsed.scheme() != "https" {
+            return Err(format!("Invalid {field} URL"));
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if !self.transcription_url.is_empty() {
-            Url::parse(&self.transcription_url)
-                .map_err(|_| "Invalid transcription URL".to_string())?;
+            Self::parse_http_url(&self.transcription_url, "transcription")?;
         }
         if !self.summary_url.is_empty() {
-            Url::parse(&self.summary_url).map_err(|_| "Invalid summary URL".to_string())?;
+            Self::parse_http_url(&self.summary_url, "summary")?;
         }
         if self.transcription_task != "transcribe" && self.transcription_task != "diarize" {
             return Err("Invalid transcription task".to_string());
@@ -109,6 +118,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_http_urls() {
+        let s = PublicSettings {
+            transcription_url: "file:///tmp/transcribe".to_string(),
+            ..Default::default()
+        };
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
     fn auto_run_pipeline_on_stop_is_disabled_by_default() {
         assert!(!PublicSettings::default().auto_run_pipeline_on_stop);
     }
@@ -122,6 +140,7 @@ mod tests {
     fn missing_auto_run_pipeline_on_stop_uses_default() {
         let body = r#"{
             "recording_root":"./recordings",
+            "artifact_open_app":"",
             "transcription_url":"",
             "transcription_task":"transcribe",
             "transcription_diarization_setting":"general",
@@ -141,6 +160,7 @@ mod tests {
     fn missing_transcription_task_fields_use_defaults() {
         let body = r#"{
             "recording_root":"./recordings",
+            "artifact_open_app":"",
             "transcription_url":"",
             "summary_url":"",
             "openai_model":"gpt-4.1-mini",
@@ -157,6 +177,7 @@ mod tests {
     fn missing_summary_prompt_uses_default() {
         let body = r#"{
             "recording_root":"./recordings",
+            "artifact_open_app":"",
             "transcription_url":"",
             "transcription_task":"transcribe",
             "transcription_diarization_setting":"general",
@@ -171,5 +192,25 @@ mod tests {
             parsed.summary_prompt,
             "Есть стенограмма встречи. Подготовь краткое саммари."
         );
+    }
+
+    #[test]
+    fn missing_artifact_open_app_uses_default() {
+        let body = r#"{
+            "recording_root":"./recordings",
+            "transcription_url":"",
+            "transcription_task":"transcribe",
+            "transcription_diarization_setting":"general",
+            "summary_url":"",
+            "summary_prompt":"Есть стенограмма встречи. Подготовь краткое саммари.",
+            "openai_model":"gpt-4.1-mini",
+            "opus_bitrate_kbps":24,
+            "mic_device_name":"",
+            "system_device_name":"",
+            "auto_run_pipeline_on_stop":false,
+            "api_call_logging_enabled":false
+        }"#;
+        let parsed: PublicSettings = serde_json::from_str(body).expect("settings should parse");
+        assert_eq!(parsed.artifact_open_app, "");
     }
 }

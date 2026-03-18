@@ -226,6 +226,7 @@ mod tests {
         std::fs::write(&tmp_path, b"fake-opus").expect("write temp opus");
         let settings = PublicSettings {
             recording_root: "./recordings".to_string(),
+            artifact_open_app: String::new(),
             transcription_url: format!("http://{addr}/api/v1/audio/transcriptions"),
             transcription_task: "diarize".to_string(),
             transcription_diarization_setting: "meeting".to_string(),
@@ -287,6 +288,7 @@ mod tests {
         std::fs::write(&tmp_path, b"fake-opus").expect("write temp opus");
         let settings = PublicSettings {
             recording_root: "./recordings".to_string(),
+            artifact_open_app: String::new(),
             transcription_url: format!("http://{addr}/api/v1/audio/transcriptions"),
             transcription_task: "diarize".to_string(),
             transcription_diarization_setting: "meeting".to_string(),
@@ -329,6 +331,7 @@ mod tests {
 
         let settings = PublicSettings {
             recording_root: "./recordings".to_string(),
+            artifact_open_app: String::new(),
             transcription_url: "https://example.com/transcribe".to_string(),
             transcription_task: "transcribe".to_string(),
             transcription_diarization_setting: "general".to_string(),

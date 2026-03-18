@@ -23,6 +23,7 @@ const { listeners, invokeMock } = vi.hoisted(() => ({
     if (cmd === "get_settings") {
       return {
         recording_root: "./recordings",
+        artifact_open_app: "",
         transcription_url: "",
         transcription_task: "transcribe",
         transcription_diarization_setting: "general",

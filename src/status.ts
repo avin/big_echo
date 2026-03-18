@@ -10,6 +10,10 @@ const APP_STATUS_RU: Record<string, string> = {
   system_source_not_detected: "системный источник не найден",
 };
 
+const ERROR_MESSAGE_RU: Record<string, string> = {
+  "Topic is too long (max 200 chars)": "тема слишком длинная (максимум 200 символов)",
+};
+
 const SESSION_STATUS_RU: Record<string, string> = {
   idle: "ожидание",
   recording: "идет запись",
@@ -26,7 +30,8 @@ export function formatAppStatus(status: string): string {
   }
   if (status.startsWith("error:")) {
     const message = status.slice("error:".length).trim();
-    return message ? `ошибка: ${message}` : "ошибка";
+    if (!message) return "ошибка";
+    return `ошибка: ${ERROR_MESSAGE_RU[message] ?? message}`;
   }
   return APP_STATUS_RU[status] ?? status;
 }

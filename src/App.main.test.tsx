@@ -23,6 +23,7 @@ const { listeners, invokeMock } = vi.hoisted(() => ({
     if (cmd === "get_settings") {
       return {
         recording_root: "./recordings",
+        artifact_open_app: "",
         transcription_url: "",
         transcription_task: "transcribe",
         transcription_diarization_setting: "general",
@@ -93,6 +94,13 @@ describe("App main window", () => {
   it("registers tray listeners and reacts to tray start/stop", async () => {
     render(<App />);
 
+    expect(screen.getByRole("main")).toHaveClass("mac-window");
+    expect(screen.getByRole("main")).toHaveClass("mac-content");
+    await waitFor(() => {
+      expect(screen.getByRole("tablist", { name: "Settings sections" }).parentElement).toHaveClass(
+        "settings-layout"
+      );
+    });
     expect(screen.getByText("BigEcho")).toBeInTheDocument();
     expect(screen.queryByText("Recording")).not.toBeInTheDocument();
     expect(screen.queryByText("При закрытии окно сворачивается в трей")).not.toBeInTheDocument();
@@ -183,7 +191,7 @@ describe("App main window", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("get_session_meta", { sessionId: "s2" });
     });
-    expect(screen.getByText("Audio: 01:02:03")).toBeInTheDocument();
+    expect(screen.getByText("01:02:03")).toBeInTheDocument();
 
     const editableTopic = screen.getByDisplayValue("Initial topic");
     await user.clear(editableTopic);
@@ -272,6 +280,7 @@ describe("App main window", () => {
       if (cmd === "get_settings") {
         return {
           recording_root: "./recordings",
+          artifact_open_app: "",
           transcription_url: "",
           transcription_task: "transcribe",
           transcription_diarization_setting: "general",
@@ -360,6 +369,7 @@ describe("App main window", () => {
       if (cmd === "get_settings") {
         return {
           recording_root: "./recordings",
+          artifact_open_app: "",
           transcription_url: "",
           transcription_task: "transcribe",
           transcription_diarization_setting: "general",
@@ -443,6 +453,7 @@ describe("App main window", () => {
       if (cmd === "get_settings") {
         return {
           recording_root: "./recordings",
+          artifact_open_app: "",
           transcription_url: "",
           transcription_task: "transcribe",
           transcription_diarization_setting: "general",
@@ -673,7 +684,7 @@ describe("App main window", () => {
     });
   });
 
-  it("shows transcript and summary labels when both artifacts are ready", async () => {
+  it("opens transcript and summary artifacts by clicking labels", async () => {
     const user = userEvent.setup();
 
     invokeMock.mockImplementation(async (cmd: string) => {
@@ -707,6 +718,9 @@ describe("App main window", () => {
           participants: [],
         };
       }
+      if (cmd === "open_session_artifact") {
+        return "opened";
+      }
       return null;
     });
 
@@ -715,6 +729,19 @@ describe("App main window", () => {
     await waitFor(() => {
       expect(screen.getByText("текст")).toBeInTheDocument();
       expect(screen.getByText("саммари")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "текст" }));
+    await user.click(screen.getByRole("button", { name: "саммари" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("open_session_artifact", {
+        sessionId: "s6",
+        artifactKind: "transcript",
+      });
+      expect(invokeMock).toHaveBeenCalledWith("open_session_artifact", {
+        sessionId: "s6",
+        artifactKind: "summary",
+      });
     });
   });
 });

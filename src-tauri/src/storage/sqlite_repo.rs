@@ -1,4 +1,6 @@
-use crate::domain::session::SessionMeta;
+use crate::domain::session::{SessionMeta, SessionStatus};
+use crate::storage::session_store::load_meta;
+use chrono::DateTime;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -37,6 +39,38 @@ pub struct SessionEvent {
 
 fn db_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("bigecho.sqlite3")
+}
+
+fn file_has_non_empty_text(path: &Path) -> bool {
+    let content = match std::fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    !content.trim().is_empty()
+}
+
+fn format_hms(total_seconds: i64) -> String {
+    let safe = total_seconds.max(0);
+    let hours = safe / 3600;
+    let minutes = (safe % 3600) / 60;
+    let seconds = safe % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+pub(crate) fn audio_duration_hms(meta: &SessionMeta) -> String {
+    let started = match DateTime::parse_from_rfc3339(&meta.started_at_iso) {
+        Ok(value) => value,
+        Err(_) => return "00:00:00".to_string(),
+    };
+    let ended = match meta
+        .ended_at_iso
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+    {
+        Some(value) => value,
+        None => return "00:00:00".to_string(),
+    };
+    format_hms(ended.signed_duration_since(started).num_seconds())
 }
 
 fn open(app_data_dir: &Path) -> Result<Connection, String> {
@@ -189,7 +223,22 @@ pub fn list_sessions(app_data_dir: &Path) -> Result<Vec<SessionListItem>, String
 
     let mut out = Vec::new();
     for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+        let mut item = row.map_err(|e| e.to_string())?;
+        if let Some(meta_path) = get_meta_path(app_data_dir, &item.session_id)? {
+            if let Ok(meta) = load_meta(&meta_path) {
+                let session_dir = PathBuf::from(&item.session_dir);
+                let transcript_ok =
+                    file_has_non_empty_text(&session_dir.join(&meta.artifacts.transcript_file));
+                let summary_ok =
+                    file_has_non_empty_text(&session_dir.join(&meta.artifacts.summary_file));
+                item.audio_duration_hms = audio_duration_hms(&meta);
+                item.has_transcript_text =
+                    transcript_ok && !matches!(meta.status, SessionStatus::Recording | SessionStatus::Recorded);
+                item.has_summary_text =
+                    summary_ok && matches!(meta.status, SessionStatus::Summarized | SessionStatus::Done);
+            }
+        }
+        out.push(item);
     }
     Ok(out)
 }
@@ -336,9 +385,46 @@ pub fn clear_retry_job(app_data_dir: &Path, session_id: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::session::{SessionMeta, SessionStatus};
+    use crate::storage::session_store::save_meta;
+    use chrono::{Duration, Local};
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn list_sessions_enriches_derived_fields_from_meta_and_files() {
+        let dir = temp_dir();
+        let session_dir = dir.path().join("sessions").join("s-derived");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let meta_path = session_dir.join("meta.json");
+
+        let started = Local::now() - Duration::seconds(90);
+        let ended = started + Duration::seconds(90);
+
+        let mut meta = SessionMeta::new(
+            "s-derived".to_string(),
+            vec!["zoom".to_string()],
+            "Weekly sync".to_string(),
+            vec!["Alice".to_string()],
+        );
+        meta.started_at_iso = started.to_rfc3339();
+        meta.ended_at_iso = Some(ended.to_rfc3339());
+        meta.status = SessionStatus::Done;
+        meta.artifacts.transcript_file = "transcript.txt".to_string();
+        meta.artifacts.summary_file = "summary.txt".to_string();
+
+        save_meta(&meta_path, &meta).expect("save meta");
+        std::fs::write(session_dir.join("transcript.txt"), "mock transcript").expect("write transcript");
+        std::fs::write(session_dir.join("summary.txt"), "mock summary").expect("write summary");
+        upsert_session(dir.path(), &meta, &session_dir, &meta_path).expect("upsert session");
+
+        let sessions = list_sessions(dir.path()).expect("list sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].audio_duration_hms, "00:01:30");
+        assert!(sessions[0].has_transcript_text);
+        assert!(sessions[0].has_summary_text);
     }
 
     #[test]

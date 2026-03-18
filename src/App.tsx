@@ -1,135 +1,22 @@
-import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  fixedSources,
+  diarizationSettingOptions,
+  PublicSettings,
+  SessionMetaView,
+  SettingsTab,
+  StartResponse,
+  transcriptionTaskOptions,
+} from "./appTypes";
+import { useRecordingController } from "./features/recording/useRecordingController";
+import { useSessions } from "./features/sessions/useSessions";
+import { useSettingsForm } from "./features/settings/useSettingsForm";
+import { formatSecretSaveState, splitParticipants } from "./lib/appUtils";
+import { getCurrentWindowLabel } from "./lib/tauri";
 import { formatAppStatus, formatSessionStatus } from "./status";
-
-type PublicSettings = {
-  recording_root: string;
-  transcription_url: string;
-  transcription_task: string;
-  transcription_diarization_setting: string;
-  summary_url: string;
-  summary_prompt: string;
-  openai_model: string;
-  opus_bitrate_kbps: number;
-  mic_device_name: string;
-  system_device_name: string;
-  auto_run_pipeline_on_stop: boolean;
-  api_call_logging_enabled: boolean;
-};
-
-type StartResponse = {
-  session_id: string;
-  session_dir: string;
-  status: string;
-};
-
-type SessionListItem = {
-  session_id: string;
-  status: string;
-  primary_tag: string;
-  topic: string;
-  display_date_ru: string;
-  started_at_iso: string;
-  session_dir: string;
-  audio_duration_hms: string;
-  has_transcript_text: boolean;
-  has_summary_text: boolean;
-};
-
-type SessionMetaView = {
-  session_id: string;
-  source: string;
-  custom_tag: string;
-  topic: string;
-  participants: string[];
-};
-
-type UiSyncStateView = {
-  source: string;
-  topic: string;
-  is_recording: boolean;
-  active_session_id: string | null;
-};
-
-type SecretSaveState = "unknown" | "updated" | "unchanged" | "error";
-type PipelineUiState = { kind: "success" | "error"; text: string };
-type LiveInputLevels = { mic: number; system: number };
-type SettingsTab = "audiototext" | "generals" | "audio";
-type DeleteTarget = { sessionId: string; force: boolean };
-
-const fixedSources = ["slack", "zoom", "telemost", "telegram", "browser", "facetime"];
-const transcriptionTaskOptions = ["transcribe", "diarize"];
-const diarizationSettingOptions = ["general", "meeting", "telephonic"];
-const currentWindow = getCurrentWindow();
-const isSettingsWindow = currentWindow.label === "settings";
-const isTrayWindow = currentWindow.label === "tray";
-
-function isValidUrl(value: string): boolean {
-  try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function validateSettings(settings: PublicSettings | null): string[] {
-  if (!settings) return [];
-  const errors: string[] = [];
-  if (settings.transcription_url.trim() && !isValidUrl(settings.transcription_url.trim())) {
-    errors.push("Неверный URL транскрибации");
-  }
-  if (settings.summary_url.trim() && !isValidUrl(settings.summary_url.trim())) {
-    errors.push("Неверный URL саммари");
-  }
-  if (settings.opus_bitrate_kbps < 12 || settings.opus_bitrate_kbps > 128) {
-    errors.push("Битрейт Opus должен быть от 12 до 128 kbps");
-  }
-  return errors;
-}
-
-function formatSecretSaveState(state: SecretSaveState): string {
-  if (state === "updated") return "обновлён";
-  if (state === "unchanged") return "не изменён";
-  if (state === "error") return "ошибка";
-  return "";
-}
-
-function splitParticipants(value: string): string[] {
-  return value
-    .split(",")
-    .map((v) => v.trim())
-    .filter(Boolean);
-}
-
-function parseEventPayload<T>(event: unknown): T | null {
-  if (!event || typeof event !== "object") return null;
-  const candidate = event as { payload?: unknown };
-  const payload = candidate.payload ?? event;
-  if (typeof payload === "string") {
-    try {
-      return JSON.parse(payload) as T;
-    } catch {
-      return null;
-    }
-  }
-  if (payload && typeof payload === "object") {
-    return payload as T;
-  }
-  return null;
-}
-
-function getErrorMessage(value: unknown): string {
-  if (value instanceof Error) return value.message;
-  return String(value);
-}
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
-}
+const currentWindowLabel = getCurrentWindowLabel();
+const isSettingsWindow = currentWindowLabel === "settings";
+const isTrayWindow = currentWindowLabel === "tray";
 
 export function App() {
   const [topic, setTopic] = useState("");
@@ -139,557 +26,78 @@ export function App() {
   const [session, setSession] = useState<StartResponse | null>(null);
   const [lastSessionId, setLastSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState("idle");
-  const [settings, setSettings] = useState<PublicSettings | null>(null);
-  const [savedSettingsSnapshot, setSavedSettingsSnapshot] = useState<PublicSettings | null>(null);
-  const [nexaraKey, setNexaraKey] = useState("");
-  const [openaiKey, setOpenaiKey] = useState("");
-  const [nexaraSecretState, setNexaraSecretState] = useState<SecretSaveState>("unknown");
-  const [openaiSecretState, setOpenaiSecretState] = useState<SecretSaveState>("unknown");
-  const [sessions, setSessions] = useState<SessionListItem[]>([]);
-  const [sessionDetails, setSessionDetails] = useState<Record<string, SessionMetaView>>({});
-  const [savedSessionDetails, setSavedSessionDetails] = useState<Record<string, SessionMetaView>>({});
-  const [audioDevices, setAudioDevices] = useState<string[]>([]);
-  const [sessionSearchQuery, setSessionSearchQuery] = useState("");
-  const [textPendingBySession, setTextPendingBySession] = useState<Record<string, boolean>>({});
-  const [summaryPendingBySession, setSummaryPendingBySession] = useState<Record<string, boolean>>({});
-  const [pipelineStateBySession, setPipelineStateBySession] = useState<Record<string, PipelineUiState>>({});
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
-  const [deletePendingSessionId, setDeletePendingSessionId] = useState<string | null>(null);
-  const [liveLevels, setLiveLevels] = useState<LiveInputLevels>({ mic: 0, system: 0 });
-  const [uiSyncReady, setUiSyncReady] = useState(isSettingsWindow);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("audiototext");
-  const topicRef = useRef(topic);
-  const sourceRef = useRef(source);
-  const sessionRef = useRef<StartResponse | null>(session);
-  const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  const trayTopicAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const trayTopicSavedSignatureRef = useRef<string>("");
-
-  const settingsErrors = useMemo(() => validateSettings(settings), [settings]);
-  const canSaveSettings = Boolean(settings) && settingsErrors.length === 0;
-
-  useEffect(() => {
-    topicRef.current = topic;
-    sourceRef.current = source;
-    sessionRef.current = session;
-  }, [topic, source, session]);
+  const {
+    audioDevices,
+    autoDetectSystemSource,
+    canSaveSettings,
+    nexaraKey,
+    nexaraSecretState,
+    openaiKey,
+    openaiSecretState,
+    saveApiKeys,
+    saveSettings,
+    saveSettingsPatch,
+    savedSettingsSnapshot,
+    setNexaraKey,
+    setNexaraSecretState,
+    setOpenaiKey,
+    setOpenaiSecretState,
+    setSettings,
+    setSettingsTab,
+    settings,
+    settingsErrors,
+    settingsTab,
+  } = useSettingsForm({ isTrayWindow, setStatus });
+  const {
+    confirmDeleteSession,
+    deletePendingSessionId,
+    deleteTarget,
+    filteredSessions,
+    getSummary,
+    getText,
+    loadSessions,
+    openSessionArtifact,
+    openSessionFolder,
+    pipelineStateBySession,
+    requestDeleteSession,
+    sessionDetails,
+    sessionSearchQuery,
+    sessions,
+    setDeleteTarget,
+    setSessionDetails,
+    setSessionSearchQuery,
+    summaryPendingBySession,
+    textPendingBySession,
+  } = useSessions({ setStatus, lastSessionId, setLastSessionId });
+  const { liveLevels, start, startFromTray, stop } = useRecordingController({
+    isSettingsWindow,
+    isTrayWindow,
+    topic,
+    setTopic,
+    participants,
+    setParticipants,
+    source,
+    setSource,
+    customTag,
+    setCustomTag,
+    session,
+    setSession,
+    lastSessionId,
+    setLastSessionId,
+    status,
+    setStatus,
+    loadSessions,
+  });
 
   useEffect(() => {
     if (!isTrayWindow) return;
     document.body.classList.add("tray-window-body");
-    void loadSettings().catch(() => undefined);
-    void loadAudioDevices().catch(() => undefined);
     document.documentElement.classList.add("tray-window-html");
     return () => {
       document.body.classList.remove("tray-window-body");
       document.documentElement.classList.remove("tray-window-html");
     };
   }, []);
-
-  useEffect(() => {
-    if (isTrayWindow) return;
-    void loadSettings().catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    if (isTrayWindow) return;
-    if (settingsTab !== "audio") return;
-    if (audioDevices.length > 0) return;
-    void loadAudioDevices().catch(() => undefined);
-  }, [settingsTab, audioDevices.length]);
-
-  useEffect(() => {
-    if (!isTrayWindow) return;
-    let active = true;
-    let inFlight = false;
-    const tick = async () => {
-      if (inFlight) return;
-      inFlight = true;
-      try {
-        const levels = await invoke<LiveInputLevels>("get_live_input_levels");
-        if (!active) return;
-        setLiveLevels({
-          mic: clamp01(levels.mic),
-          system: clamp01(levels.system),
-        });
-      } catch {
-        if (!active) return;
-      } finally {
-        inFlight = false;
-      }
-    };
-    void tick();
-    const intervalMs = status === "recording" ? 90 : 160;
-    const timer = setInterval(() => {
-      void tick();
-    }, intervalMs);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [status]);
-
-  useEffect(() => {
-    if (isSettingsWindow) return;
-    let active = true;
-    invoke<UiSyncStateView>("get_ui_sync_state")
-      .then((current) => {
-        if (!active) return;
-        if (current.source?.trim()) setSource(current.source.trim());
-        setTopic(current.topic ?? "");
-        if (current.is_recording) {
-          setStatus("recording");
-          if (current.active_session_id) {
-            setSession({
-              session_id: current.active_session_id,
-              session_dir: "",
-              status: "recording",
-            });
-            setLastSessionId(current.active_session_id);
-          }
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setUiSyncReady(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  async function loadSettings() {
-    const data = await invoke<PublicSettings>("get_settings");
-    setSettings(data);
-    setSavedSettingsSnapshot(data);
-  }
-
-  async function loadAudioDevices() {
-    const list = await invoke<string[]>("list_audio_input_devices");
-    setAudioDevices(list);
-  }
-
-  async function autoDetectSystemSource() {
-    const detected = await invoke<string | null>("detect_system_source_device");
-    if (!detected) {
-      setStatus("system_source_not_detected");
-      return;
-    }
-    setSettings((prev) => (prev ? { ...prev, system_device_name: detected } : prev));
-    setStatus(`system_source_detected:${detected}`);
-  }
-
-  async function saveSettings() {
-    if (!settings) return;
-    if (settingsErrors.length === 0) {
-      await invoke("save_public_settings", { payload: settings });
-      setSavedSettingsSnapshot(settings);
-    }
-    await saveApiKeys();
-    setStatus(settingsErrors.length > 0 ? "error: исправьте настройки перед сохранением" : "settings_saved");
-  }
-
-  async function saveApiKeys() {
-    let hasSecretError = false;
-    let nexaraState: SecretSaveState = "unchanged";
-    let openaiState: SecretSaveState = "unchanged";
-
-    if (nexaraKey.trim()) {
-      try {
-        await invoke("set_api_secret", { name: "NEXARA_API_KEY", value: nexaraKey.trim() });
-        nexaraState = "updated";
-      } catch {
-        nexaraState = "error";
-        hasSecretError = true;
-      }
-    }
-
-    if (openaiKey.trim()) {
-      try {
-        await invoke("set_api_secret", { name: "OPENAI_API_KEY", value: openaiKey.trim() });
-        openaiState = "updated";
-      } catch {
-        openaiState = "error";
-        hasSecretError = true;
-      }
-    }
-
-    setNexaraSecretState(nexaraState);
-    setOpenaiSecretState(openaiState);
-    if (hasSecretError) {
-      setStatus("error: не удалось сохранить один или несколько ключей");
-    } else {
-      if (nexaraState === "updated") setNexaraKey("");
-      if (openaiState === "updated") setOpenaiKey("");
-      setStatus("keys_saved");
-    }
-  }
-
-  async function saveSettingsPatch(patch: Partial<PublicSettings>) {
-    const base = settings ?? (await invoke<PublicSettings>("get_settings"));
-    const next = { ...base, ...patch };
-    setSettings(next);
-    await invoke("save_public_settings", { payload: next });
-  }
-
-  async function startRecording(payload: { source: string; customTag?: string; topic?: string; participants?: string[] }) {
-    const tags = [payload.source];
-    if (payload.customTag && payload.customTag.trim()) tags.push(payload.customTag.trim());
-    const res = await invoke<StartResponse>("start_recording", {
-      payload: {
-        tags,
-        topic: payload.topic ?? "",
-        participants: payload.participants ?? [],
-      },
-    });
-    setSession(res);
-    setLastSessionId(res.session_id);
-    setStatus("recording");
-    await loadSessions();
-  }
-
-  async function start() {
-    await startRecording({
-      source,
-      customTag,
-      topic,
-      participants: splitParticipants(participants),
-    });
-  }
-
-  async function startFromTray() {
-    await startRecording({
-      source,
-      topic,
-      participants: [],
-    });
-  }
-
-  async function stop() {
-    if (!session) return;
-    await invoke<string>("stop_recording", { sessionId: session.session_id });
-    setStatus("recorded");
-    setSession(null);
-    await loadSessions();
-  }
-
-  async function runPipeline() {
-    if (!lastSessionId) return;
-    await invoke<string>("run_pipeline", { sessionId: lastSessionId });
-    setStatus("done");
-    await loadSessions();
-  }
-
-  async function loadSessions() {
-    const data = await invoke<SessionListItem[]>("list_sessions");
-    setSessions(data);
-    const details = await Promise.all(
-      data.map(async (item) => {
-        try {
-          const meta = await invoke<SessionMetaView>("get_session_meta", { sessionId: item.session_id });
-          return [item.session_id, meta] as const;
-        } catch {
-          return [
-            item.session_id,
-            {
-              session_id: item.session_id,
-              source: item.primary_tag,
-              custom_tag: "",
-              topic: item.topic,
-              participants: [],
-            },
-          ] as const;
-        }
-      })
-    );
-    const map = Object.fromEntries(details);
-    setSessionDetails(map);
-    setSavedSessionDetails(map);
-  }
-
-  async function getText(sessionId: string) {
-    setTextPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
-    setPipelineStateBySession((prev) => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-    try {
-      await invoke<string>("run_transcription", { sessionId });
-      setPipelineStateBySession((prev) => ({
-        ...prev,
-        [sessionId]: { kind: "success", text: "Text fetched successfully" },
-      }));
-      setStatus("transcribed");
-      await loadSessions();
-    } catch (err) {
-      const message = getErrorMessage(err);
-      setPipelineStateBySession((prev) => ({
-        ...prev,
-        [sessionId]: { kind: "error", text: `Get text failed: ${message}` },
-      }));
-      setStatus(`error: ${message}`);
-    } finally {
-      setTextPendingBySession((prev) => ({ ...prev, [sessionId]: false }));
-    }
-  }
-
-  async function getSummary(sessionId: string) {
-    setSummaryPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
-    setPipelineStateBySession((prev) => {
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-    try {
-      await invoke<string>("run_summary", { sessionId });
-      setPipelineStateBySession((prev) => ({
-        ...prev,
-        [sessionId]: { kind: "success", text: "Summary fetched successfully" },
-      }));
-      setStatus("done");
-      await loadSessions();
-    } catch (err) {
-      const message = getErrorMessage(err);
-      setPipelineStateBySession((prev) => ({
-        ...prev,
-        [sessionId]: { kind: "error", text: `Get summary failed: ${message}` },
-      }));
-      setStatus(`error: ${message}`);
-    } finally {
-      setSummaryPendingBySession((prev) => ({ ...prev, [sessionId]: false }));
-    }
-  }
-
-  async function openSessionFolder(sessionDir: string) {
-    await invoke<string>("open_session_folder", { sessionDir });
-  }
-
-  function requestDeleteSession(sessionId: string, force: boolean) {
-    setDeleteTarget({ sessionId, force });
-  }
-
-  async function confirmDeleteSession() {
-    if (!deleteTarget) return;
-    const sessionId = deleteTarget.sessionId;
-    setDeletePendingSessionId(sessionId);
-    try {
-      await invoke<string>("delete_session", { sessionId, force: deleteTarget.force });
-      setSessions((prev) => prev.filter((item) => item.session_id !== sessionId));
-      setSessionDetails((prev) => {
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setSavedSessionDetails((prev) => {
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setTextPendingBySession((prev) => {
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setSummaryPendingBySession((prev) => {
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      setPipelineStateBySession((prev) => {
-        const next = { ...prev };
-        delete next[sessionId];
-        return next;
-      });
-      if (lastSessionId === sessionId) {
-        setLastSessionId(null);
-      }
-      setDeleteTarget(null);
-      setStatus("session_deleted");
-    } catch (err) {
-      setStatus(`error: ${getErrorMessage(err)}`);
-    } finally {
-      setDeletePendingSessionId(null);
-    }
-  }
-
-  useEffect(() => {
-    let unlistenStart: (() => void) | undefined;
-    let unlistenStop: (() => void) | undefined;
-    let unlistenUiSync: (() => void) | undefined;
-    let unlistenUiRecording: (() => void) | undefined;
-
-    listen("tray:start", async () => {
-      try {
-        await startRecording({
-          source: sourceRef.current,
-          topic: topicRef.current,
-          participants: [],
-        });
-      } catch (err) {
-        setStatus(`error: ${String(err)}`);
-      }
-    }).then((fn) => {
-      unlistenStart = fn;
-    });
-
-    listen("tray:stop", async () => {
-      try {
-        if (!sessionRef.current) return;
-        await invoke<string>("stop_recording", { sessionId: sessionRef.current.session_id });
-        setStatus("recorded");
-        setSession(null);
-        await loadSessions();
-      } catch (err) {
-        setStatus(`error: ${String(err)}`);
-      }
-    }).then((fn) => {
-      unlistenStop = fn;
-    });
-
-    listen("ui:sync", (event) => {
-      const payload = parseEventPayload<{ source?: string; topic?: string }>(event);
-      if (!payload) return;
-      if (typeof payload.source === "string" && payload.source.trim() && payload.source !== sourceRef.current) {
-        setSource(payload.source);
-      }
-      if (typeof payload.topic === "string" && payload.topic !== topicRef.current) {
-        setTopic(payload.topic);
-      }
-    }).then((fn) => {
-      unlistenUiSync = fn;
-    });
-
-    listen("ui:recording", (event) => {
-      const payload = parseEventPayload<{ recording?: boolean; sessionId?: string | null }>(event);
-      if (!payload || typeof payload.recording !== "boolean") return;
-      if (payload.recording) {
-        setStatus("recording");
-        if (payload.sessionId) {
-          setSession((prev) => prev ?? { session_id: payload.sessionId!, session_dir: "", status: "recording" });
-          setLastSessionId(payload.sessionId);
-        }
-      } else {
-        setSession(null);
-        setStatus((prev) => (prev === "recording" ? "recorded" : prev));
-      }
-    }).then((fn) => {
-      unlistenUiRecording = fn;
-    });
-
-    return () => {
-      if (unlistenStart) unlistenStart();
-      if (unlistenStop) unlistenStop();
-      if (unlistenUiSync) unlistenUiSync();
-      if (unlistenUiRecording) unlistenUiRecording();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isSettingsWindow) return;
-    const recording = status === "recording";
-    emit("recording:status", { recording }).catch(() => undefined);
-    emit("ui:recording", { recording, sessionId: recording ? (session?.session_id ?? null) : null }).catch(() => undefined);
-  }, [status, session]);
-
-  useEffect(() => {
-    if (isSettingsWindow || !uiSyncReady) return;
-    invoke("set_ui_sync_state", { source, topic }).catch(() => undefined);
-    emit("ui:sync", { source, topic }).catch(() => undefined);
-  }, [source, topic, uiSyncReady]);
-
-  useEffect(() => {
-    if (!isTrayWindow) return;
-    if (status !== "recording" || !session?.session_id) return;
-    const signature = `${session.session_id}::${source}::${topic}`;
-    if (signature === trayTopicSavedSignatureRef.current) return;
-    if (trayTopicAutosaveTimerRef.current) clearTimeout(trayTopicAutosaveTimerRef.current);
-
-    trayTopicAutosaveTimerRef.current = setTimeout(async () => {
-      try {
-        await invoke<string>("update_session_details", {
-          payload: {
-            session_id: session.session_id,
-            source,
-            custom_tag: "",
-            topic: topic.trim(),
-            participants: [],
-          },
-        });
-        trayTopicSavedSignatureRef.current = signature;
-      } catch {
-        // Keep recorder responsive even if metadata update fails.
-      }
-    }, 450);
-
-    return () => {
-      if (trayTopicAutosaveTimerRef.current) clearTimeout(trayTopicAutosaveTimerRef.current);
-    };
-  }, [status, session?.session_id, source, topic]);
-
-  useEffect(() => {
-    const ids = Object.keys(sessionDetails);
-    for (const sessionId of ids) {
-      const current = sessionDetails[sessionId];
-      const saved = savedSessionDetails[sessionId];
-      if (!saved) continue;
-
-      const currentSig = JSON.stringify(current);
-      const savedSig = JSON.stringify(saved);
-      if (currentSig === savedSig) continue;
-
-      const existing = autosaveTimersRef.current[sessionId];
-      if (existing) clearTimeout(existing);
-
-      autosaveTimersRef.current[sessionId] = setTimeout(async () => {
-        try {
-          await invoke<string>("update_session_details", {
-            payload: {
-              session_id: sessionId,
-              source: current.source,
-              custom_tag: current.custom_tag,
-              topic: current.topic,
-              participants: current.participants,
-            },
-          });
-          setSavedSessionDetails((prev) => ({ ...prev, [sessionId]: current }));
-          setStatus("session_details_autosaved");
-        } catch (err) {
-          setStatus(`error: ${String(err)}`);
-        }
-      }, 700);
-    }
-
-    return () => {
-      for (const timer of Object.values(autosaveTimersRef.current)) {
-        clearTimeout(timer);
-      }
-    };
-  }, [sessionDetails, savedSessionDetails]);
-
-  const filteredSessions = useMemo(() => {
-    const query = sessionSearchQuery.trim().toLowerCase();
-    return sessions.filter((item) => {
-      const detail = sessionDetails[item.session_id];
-      const sourceValue = (detail?.source ?? item.primary_tag).toLowerCase();
-      const customValue = (detail?.custom_tag ?? "").toLowerCase();
-      const topicValue = (detail?.topic ?? item.topic ?? "").toLowerCase();
-      const participantsValue = (detail?.participants ?? []).join(", ").toLowerCase();
-      const pathValue = item.session_dir.toLowerCase();
-      const statusValue = item.status.toLowerCase();
-      const dateValue = item.display_date_ru.toLowerCase();
-      if (!query) return true;
-      return (
-        sourceValue.includes(query) ||
-        customValue.includes(query) ||
-        topicValue.includes(query) ||
-        participantsValue.includes(query) ||
-        pathValue.includes(query) ||
-        statusValue.includes(query) ||
-        dateValue.includes(query)
-      );
-    });
-  }, [sessions, sessionDetails, sessionSearchQuery]);
 
   function renderSettingsFields() {
     if (!settings) return null;
@@ -707,6 +115,7 @@ export function App() {
         openaiKey.trim().length > 0,
       generals:
         isDirty("recording_root") ||
+        isDirty("artifact_open_app") ||
         isDirty("auto_run_pipeline_on_stop") ||
         isDirty("api_call_logging_enabled"),
       audio: isDirty("opus_bitrate_kbps") || isDirty("mic_device_name") || isDirty("system_device_name"),
@@ -718,7 +127,7 @@ export function App() {
     ];
 
     return (
-      <div className="settings-tabs">
+      <div className="settings-tabs settings-layout">
         <div className="settings-tab-list" role="tablist" aria-label="Settings sections">
           {tabButtons.map((tab) => (
             <button
@@ -840,6 +249,13 @@ export function App() {
                 <input
                   value={settings.recording_root}
                   onChange={(e) => setSettings({ ...settings, recording_root: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                Artifact opener app (optional)
+                <input
+                  value={settings.artifact_open_app ?? ""}
+                  onChange={(e) => setSettings({ ...settings, artifact_open_app: e.target.value })}
                 />
               </label>
               <label className="field">
@@ -1034,9 +450,9 @@ export function App() {
 
   if (isSettingsWindow) {
     return (
-      <main className="app-shell settings-shell">
-        <header className="hero">
-          <h1>BigEcho Settings</h1>
+      <main className="app-shell settings-shell mac-window settings-layout">
+        <header className="hero mac-titlebar">
+          <h1 className="mac-title">BigEcho Settings</h1>
           <p className="status-line">Статус: {formatAppStatus(status)}</p>
         </header>
         <section className="panel">
@@ -1047,10 +463,10 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
-      <header className="hero">
+    <main className="app-shell mac-window mac-content">
+      <header className="hero mac-titlebar">
         <div>
-          <h1>BigEcho</h1>
+          <h1 className="mac-title">BigEcho</h1>
           <p className="status-line">Status: {formatAppStatus(status)}</p>
         </div>
       </header>
@@ -1096,13 +512,38 @@ export function App() {
             return (
               <article key={item.session_id} className="session-card">
                 <div className="session-header">
-                  <div>
-                    <strong>{detail.topic || "Без темы"}</strong> ({detail.source}) - {item.display_date_ru}
+                  <div className="session-title-block">
+                    <div className="session-title-line">
+                      <strong>{detail.topic || "Без темы"}</strong>
+                      <span className="session-title-meta">
+                        ({detail.source}) - {item.display_date_ru}
+                      </span>
+                      <span className="session-duration-label">{item.audio_duration_hms}</span>
+                    </div>
+                    <div className={statusMatch ? "session-status match-hit" : "session-status"}>
+                      Status: {formatSessionStatus(item.status)}
+                    </div>
                   </div>
                   <div className="session-header-right">
                     <div className="session-labels">
-                      {item.has_transcript_text && <span className="session-label session-label-text">текст</span>}
-                      {item.has_summary_text && <span className="session-label session-label-summary">саммари</span>}
+                      {item.has_transcript_text && (
+                        <button
+                          type="button"
+                          className="session-label session-label-action session-label-text"
+                          onClick={() => void openSessionArtifact(item.session_id, "transcript")}
+                        >
+                          текст
+                        </button>
+                      )}
+                      {item.has_summary_text && (
+                        <button
+                          type="button"
+                          className="session-label session-label-action session-label-summary"
+                          onClick={() => void openSessionArtifact(item.session_id, "summary")}
+                        >
+                          саммари
+                        </button>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1120,8 +561,6 @@ export function App() {
                     </button>
                   </div>
                 </div>
-                <div className={statusMatch ? "match-hit" : ""}>Status: {formatSessionStatus(item.status)}</div>
-                <div>Audio: {item.audio_duration_hms}</div>
                 <div className="session-path-row">
                   <div className={`session-path${pathMatch ? " match-hit" : ""}`}>{item.session_dir}</div>
                   <button className="link-button" type="button" onClick={() => void openSessionFolder(item.session_dir)}>

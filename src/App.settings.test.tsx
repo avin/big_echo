@@ -7,6 +7,7 @@ const { invokeMock } = vi.hoisted(() => ({
     if (cmd === "get_settings") {
       return {
         recording_root: "./recordings",
+        artifact_open_app: "",
         transcription_url: "",
         transcription_task: "transcribe",
         transcription_diarization_setting: "general",
@@ -54,13 +55,15 @@ describe("App settings window", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    expect(screen.getByRole("main")).toHaveClass("mac-window");
+    expect(screen.getByRole("main")).toHaveClass("settings-layout");
     expect(screen.getByText("BigEcho Settings")).toBeInTheDocument();
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("get_settings");
     });
 
-    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    await user.click(await screen.findByRole("tab", { name: "Audio" }));
     await user.click(screen.getByRole("button", { name: "Auto-detect system source" }));
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("detect_system_source_device");
@@ -92,6 +95,22 @@ describe("App settings window", () => {
 
     expect(screen.queryByText("Неверный URL транскрибации")).not.toBeInTheDocument();
     expect(saveButton).toBeEnabled();
+  });
+
+  it("treats non-http urls as invalid", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("get_settings");
+    });
+
+    const saveButton = screen.getByRole("button", { name: "Save settings" });
+    await user.clear(screen.getByLabelText("Transcription URL"));
+    await user.type(screen.getByLabelText("Transcription URL"), "file:///tmp/transcribe");
+
+    expect(screen.getByText("Неверный URL транскрибации")).toBeInTheDocument();
+    expect(saveButton).toBeDisabled();
   });
 
   it("saves settings and api keys", async () => {
@@ -158,6 +177,27 @@ describe("App settings window", () => {
         payload: expect.objectContaining({
           auto_run_pipeline_on_stop: true,
           api_call_logging_enabled: true,
+        }),
+      });
+    });
+  });
+
+  it("saves artifact opener app from generals tab", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("get_settings");
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Generals" }));
+    await user.type(screen.getByLabelText("Artifact opener app (optional)"), "Visual Studio Code");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("save_public_settings", {
+        payload: expect.objectContaining({
+          artifact_open_app: "Visual Studio Code",
         }),
       });
     });

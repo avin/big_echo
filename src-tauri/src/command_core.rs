@@ -9,8 +9,12 @@ pub enum PipelineInvocation {
 }
 
 pub fn validate_start_request(topic: &str, participants: &[String]) -> Result<(), String> {
-    let _ = topic;
-    let _ = participants;
+    if topic.chars().count() > 200 {
+        return Err("Topic is too long (max 200 chars)".to_string());
+    }
+    if participants.len() > 32 {
+        return Err("Too many participants (max 32)".to_string());
+    }
     Ok(())
 }
 
@@ -84,6 +88,20 @@ mod tests {
         let participants: Vec<String> = Vec::new();
         let result = validate_start_request("Planning", &participants);
         assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn start_validation_rejects_too_long_topic() {
+        let topic = "x".repeat(201);
+        let result = validate_start_request(&topic, &[]);
+        assert_eq!(result, Err("Topic is too long (max 200 chars)".to_string()));
+    }
+
+    #[test]
+    fn start_validation_rejects_too_many_participants() {
+        let participants: Vec<String> = (0..33).map(|i| format!("P{i}")).collect();
+        let result = validate_start_request("Planning", &participants);
+        assert_eq!(result, Err("Too many participants (max 32)".to_string()));
     }
 
     #[test]

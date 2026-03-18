@@ -1,42 +1,55 @@
+mod app_state;
 mod audio;
+mod commands;
 mod command_core;
 mod domain;
 mod pipeline;
+mod services;
 mod settings;
 mod storage;
 
+use app_state::{AppDirs, AppState};
+#[cfg(test)]
+use app_state::{SessionMetaView, StartRecordingResponse};
+use commands::recording::{
+    get_api_secret, retry_pipeline, run_pipeline, run_summary, run_transcription, set_api_secret,
+    start_recording, stop_active_recording, stop_recording,
+};
+use commands::sessions::{
+    delete_session, get_live_input_levels, get_session_meta, get_ui_sync_state, list_sessions,
+    open_session_artifact, open_session_folder, set_ui_sync_state, update_session_details,
+};
+use commands::settings::{
+    detect_system_source_device, get_settings, list_audio_input_devices, open_settings_window,
+    open_tray_window, save_public_settings,
+};
 use chrono::{DateTime, Local};
 use command_core::{
-    ensure_stop_session_matches, mark_pipeline_audio_missing, mark_pipeline_done,
-    mark_pipeline_summary_failed, mark_pipeline_transcribed, mark_pipeline_transcription_failed,
-    should_schedule_retry, validate_start_request, PipelineInvocation,
+    ensure_stop_session_matches, PipelineInvocation,
 };
-use domain::session::{SessionArtifacts, SessionMeta, SessionStatus};
-use serde::{Deserialize, Serialize};
-use settings::public_settings::{load_settings, save_settings, PublicSettings};
-use settings::secret_store::{get_secret, set_secret};
+use domain::session::SessionStatus;
+#[cfg(test)]
+use domain::session::SessionMeta;
+use settings::public_settings::{load_settings, PublicSettings};
+use services::pipeline_runner::{run_pipeline_core, spawn_retry_worker, PipelineMode};
 use std::fs;
-use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Mutex;
-use storage::fs_layout::{build_session_relative_dir, summary_name, transcript_name};
-use storage::session_store::{load_meta, save_meta};
-use storage::sqlite_repo::{
-    add_event, clear_retry_job, delete_session as repo_delete_session, fetch_due_retry_jobs, get_meta_path,
-    get_session_dir, list_sessions as repo_list_sessions, schedule_retry_job, upsert_session, SessionListItem,
-};
+use storage::fs_layout::build_session_relative_dir;
+#[cfg(test)]
+use settings::public_settings::save_settings;
+use storage::session_store::save_meta;
+use storage::sqlite_repo::{add_event, upsert_session};
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     AppHandle, Emitter, Listener, Manager, PhysicalPosition, Position, Theme, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
-use uuid::Uuid;
 
-const MAX_PIPELINE_RETRY_ATTEMPTS: i64 = 4;
-const RETRY_WORKER_POLL_SECONDS: u64 = 20;
 const LIVE_LEVELS_IDLE_POLL_MS: u64 = 260;
+#[cfg(test)]
+const MAX_PIPELINE_RETRY_ATTEMPTS: i64 = 4;
 const TRAY_ICON_ID: &str = "bigecho-tray";
 const REC_HOTKEY: &str = "CmdOrCtrl+Shift+R";
 const STOP_HOTKEY: &str = "CmdOrCtrl+Shift+S";
@@ -53,106 +66,13 @@ enum TrayIconVariant {
     RecDark,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PipelineMode {
-    Full,
-    TranscriptionOnly,
-    SummaryOnly,
-}
-
-struct AppState {
-    active_session: Mutex<Option<SessionMeta>>,
-    active_capture: Mutex<Option<audio::capture::ContinuousCapture>>,
-    ui_sync: Mutex<UiSyncState>,
-    live_levels: audio::capture::SharedLevels,
-    tray_app: Mutex<Option<AppHandle>>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            active_session: Mutex::new(None),
-            active_capture: Mutex::new(None),
-            ui_sync: Mutex::new(UiSyncState::default()),
-            live_levels: audio::capture::SharedLevels::new(),
-            tray_app: Mutex::new(None),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct AppDirs {
-    app_data_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UiSyncState {
-    source: String,
-    topic: String,
-}
-
-impl Default for UiSyncState {
-    fn default() -> Self {
-        Self {
-            source: "slack".to_string(),
-            topic: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UiSyncStateView {
-    source: String,
-    topic: String,
-    is_recording: bool,
-    active_session_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LiveInputLevelsView {
-    mic: f32,
-    system: f32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct StartRecordingRequest {
-    tags: Vec<String>,
-    topic: String,
-    participants: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct StartRecordingResponse {
-    session_id: String,
-    session_dir: String,
-    status: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct UpdateSessionDetailsRequest {
-    session_id: String,
-    source: String,
-    custom_tag: String,
-    topic: String,
-    participants: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SessionMetaView {
-    session_id: String,
-    source: String,
-    custom_tag: String,
-    topic: String,
-    participants: Vec<String>,
-}
-
 fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))
 }
 
-fn root_recordings_dir(app_data_dir: &std::path::Path, settings: &PublicSettings) -> Result<PathBuf, String> {
+pub(crate) fn root_recordings_dir(app_data_dir: &std::path::Path, settings: &PublicSettings) -> Result<PathBuf, String> {
     let root = PathBuf::from(&settings.recording_root);
     if root.is_absolute() {
         Ok(root)
@@ -161,39 +81,7 @@ fn root_recordings_dir(app_data_dir: &std::path::Path, settings: &PublicSettings
     }
 }
 
-fn file_has_non_empty_text(path: &std::path::Path) -> bool {
-    let content = match std::fs::read_to_string(path) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    !content.trim().is_empty()
-}
-
-fn format_hms(total_seconds: i64) -> String {
-    let safe = total_seconds.max(0);
-    let hours = safe / 3600;
-    let minutes = (safe % 3600) / 60;
-    let seconds = safe % 60;
-    format!("{hours:02}:{minutes:02}:{seconds:02}")
-}
-
-fn audio_duration_hms(meta: &SessionMeta) -> String {
-    let started = match DateTime::parse_from_rfc3339(&meta.started_at_iso) {
-        Ok(value) => value,
-        Err(_) => return "00:00:00".to_string(),
-    };
-    let ended = match meta
-        .ended_at_iso
-        .as_deref()
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-    {
-        Some(value) => value,
-        None => return "00:00:00".to_string(),
-    };
-    format_hms(ended.signed_duration_since(started).num_seconds())
-}
-
-fn get_settings_from_dirs(dirs: &AppDirs) -> Result<PublicSettings, String> {
+pub(crate) fn get_settings_from_dirs(dirs: &AppDirs) -> Result<PublicSettings, String> {
     load_settings(&dirs.app_data_dir)
 }
 
@@ -201,6 +89,47 @@ fn should_auto_run_pipeline_after_stop(settings: &PublicSettings) -> bool {
     settings.auto_run_pipeline_on_stop
         && !settings.transcription_url.trim().is_empty()
         && !settings.summary_url.trim().is_empty()
+}
+
+fn move_artifact_to_recovery(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if dst.exists() {
+        fs::remove_file(dst).map_err(|e| e.to_string())?;
+    }
+    match fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            fs::copy(src, dst).map_err(|e| e.to_string())?;
+            fs::remove_file(src).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+    }
+}
+
+fn preserve_capture_artifacts_for_recovery(
+    session_dir: &Path,
+    artifacts: &audio::capture::CaptureArtifacts,
+) -> Result<Vec<PathBuf>, String> {
+    fs::create_dir_all(session_dir).map_err(|e| e.to_string())?;
+    let mut preserved = Vec::new();
+
+    let mic_dst = session_dir.join("audio_recovery_mic.raw");
+    move_artifact_to_recovery(&artifacts.mic_path, &mic_dst)?;
+    if mic_dst.exists() {
+        preserved.push(mic_dst);
+    }
+
+    if let Some(system_path) = &artifacts.system_path {
+        let system_dst = session_dir.join("audio_recovery_system.raw");
+        move_artifact_to_recovery(system_path, &system_dst)?;
+        if system_dst.exists() {
+            preserved.push(system_dst);
+        }
+    }
+
+    Ok(preserved)
 }
 
 fn should_intercept_close_to_tray(window_label: &str) -> bool {
@@ -469,7 +398,7 @@ fn set_tray_indicator(app: &AppHandle, is_recording: bool) -> Result<(), String>
     Ok(())
 }
 
-fn set_tray_indicator_from_state(state: &AppState, is_recording: bool) {
+pub(crate) fn set_tray_indicator_from_state(state: &AppState, is_recording: bool) {
     let app_handle = state
         .tray_app
         .lock()
@@ -488,7 +417,7 @@ fn focus_main_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn open_settings_window_internal(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn open_settings_window_internal(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
         let _ = apply_app_icons_for_theme(app, resolve_system_theme(app));
         window.show().map_err(|e| e.to_string())?;
@@ -508,7 +437,7 @@ fn open_settings_window_internal(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn open_tray_window_internal(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn open_tray_window_internal(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("tray") {
         let _ = apply_app_icons_for_theme(app, resolve_system_theme(app));
         window.show().map_err(|e| e.to_string())?;
@@ -547,7 +476,7 @@ fn open_tray_window_internal(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn stop_active_recording_internal(
+pub(crate) fn stop_active_recording_internal(
     dirs: &AppDirs,
     state: &AppState,
     session_id: Option<&str>,
@@ -564,7 +493,6 @@ fn stop_active_recording_internal(
 
     ensure_stop_session_matches(&meta.session_id, session_id)?;
 
-    meta.status = SessionStatus::Recorded;
     meta.ended_at_iso = Some(Local::now().to_rfc3339());
 
     let settings = get_settings_from_dirs(dirs)?;
@@ -573,35 +501,47 @@ fn stop_active_recording_internal(
         .with_timezone(&Local);
     let rel_dir = build_session_relative_dir(&meta.primary_tag, started_at);
     let abs_dir = root_recordings_dir(&dirs.app_data_dir, &settings)?.join(&rel_dir);
-
-    save_meta(&abs_dir.join("meta.json"), &meta)?;
     let data_dir = dirs.app_data_dir.clone();
-    upsert_session(&data_dir, &meta, &abs_dir, &abs_dir.join("meta.json"))?;
-    add_event(&data_dir, &meta.session_id, "recording_stopped", "Audio capture stopped")?;
 
     let mut cap_guard = state
         .active_capture
         .lock()
         .map_err(|_| "capture state lock poisoned".to_string())?;
+    let mut finalize_error: Option<String> = None;
     if let Some(capture) = cap_guard.take() {
-        let artifacts = capture.stop_and_take_artifacts()?;
-        let write_res = audio::opus_writer::write_mixed_raw_i16_to_opus(
-            &abs_dir.join("audio.opus"),
-            &artifacts.mic_path,
-            artifacts.mic_rate,
-            artifacts.system_path.as_ref(),
-            artifacts.system_rate,
-            settings.opus_bitrate_kbps,
-        );
-        audio::capture::cleanup_artifacts(&artifacts);
-        write_res?;
-    } else {
-        audio::opus_writer::write_pcm_opus(
-            &abs_dir.join("audio.opus"),
-            48_000,
-            &[],
-            settings.opus_bitrate_kbps,
-        )?;
+        match capture.stop_and_take_artifacts() {
+            Ok(artifacts) => match audio::opus_writer::write_mixed_raw_i16_to_opus(
+                &abs_dir.join("audio.opus"),
+                &artifacts.mic_path,
+                artifacts.mic_rate,
+                artifacts.system_path.as_ref(),
+                artifacts.system_rate,
+                settings.opus_bitrate_kbps,
+            ) {
+                Ok(()) => audio::capture::cleanup_artifacts(&artifacts),
+                Err(err) => {
+                    let preserved = preserve_capture_artifacts_for_recovery(&abs_dir, &artifacts)?;
+                    let recovery_paths = preserved
+                        .iter()
+                        .map(|v| v.to_string_lossy().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    finalize_error = Some(format!(
+                        "Audio encoding failed: {err}. Raw capture preserved: {recovery_paths}"
+                    ));
+                }
+            },
+            Err(err) => {
+                finalize_error = Some(format!("Audio capture finalization failed: {err}"));
+            }
+        }
+    } else if let Err(err) = audio::opus_writer::write_pcm_opus(
+        &abs_dir.join("audio.opus"),
+        48_000,
+        &[],
+        settings.opus_bitrate_kbps,
+    ) {
+        finalize_error = Some(format!("Audio encoding failed: {err}"));
     }
     state.live_levels.reset();
 
@@ -610,6 +550,20 @@ fn stop_active_recording_internal(
     } else {
         set_tray_indicator_from_state(state, false);
     }
+
+    if let Some(err) = finalize_error {
+        meta.status = SessionStatus::Failed;
+        meta.errors.push(err.clone());
+        save_meta(&abs_dir.join("meta.json"), &meta)?;
+        upsert_session(&data_dir, &meta, &abs_dir, &abs_dir.join("meta.json"))?;
+        add_event(&data_dir, &meta.session_id, "recording_finalize_failed", &err)?;
+        return Err(err);
+    }
+
+    meta.status = SessionStatus::Recorded;
+    save_meta(&abs_dir.join("meta.json"), &meta)?;
+    upsert_session(&data_dir, &meta, &abs_dir, &abs_dir.join("meta.json"))?;
+    add_event(&data_dir, &meta.session_id, "recording_stopped", "Audio capture stopped")?;
 
     if should_auto_run_pipeline_after_stop(&settings) {
         let dirs_for_pipeline = dirs.clone();
@@ -628,645 +582,15 @@ fn stop_active_recording_internal(
     Ok("recorded".to_string())
 }
 
-#[tauri::command]
-fn get_settings(dirs: tauri::State<AppDirs>) -> Result<PublicSettings, String> {
-    get_settings_from_dirs(dirs.inner())
+
+#[cfg(test)]
+fn schedule_retry_for_session(data_dir: &std::path::Path, session_id: &str, error: &str) -> Result<(), String> {
+    services::pipeline_runner::schedule_retry_for_session(data_dir, session_id, error)
 }
 
-#[tauri::command]
-fn save_public_settings(dirs: tauri::State<AppDirs>, payload: PublicSettings) -> Result<(), String> {
-    save_settings(&dirs.app_data_dir, &payload)
-}
-
-#[tauri::command]
-fn list_audio_input_devices() -> Result<Vec<String>, String> {
-    audio::capture::list_input_devices()
-}
-
-#[tauri::command]
-fn detect_system_source_device() -> Result<Option<String>, String> {
-    audio::capture::detect_system_source_device()
-}
-
-#[tauri::command]
-fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    open_settings_window_internal(&app)
-}
-
-#[tauri::command]
-fn open_tray_window(app: tauri::AppHandle) -> Result<(), String> {
-    open_tray_window_internal(&app)
-}
-
-fn open_path_in_file_manager(path: &str) -> Result<(), String> {
-    let target = path.trim();
-    if target.is_empty() {
-        return Err("Session directory is empty".to_string());
-    }
-    let status = if cfg!(target_os = "macos") {
-        Command::new("open")
-            .arg(target)
-            .status()
-            .map_err(|e| e.to_string())?
-    } else if cfg!(target_os = "windows") {
-        Command::new("explorer")
-            .arg(target)
-            .status()
-            .map_err(|e| e.to_string())?
-    } else {
-        Command::new("xdg-open")
-            .arg(target)
-            .status()
-            .map_err(|e| e.to_string())?
-    };
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("failed to open session folder: exit status {status}"))
-    }
-}
-
-fn append_api_call_log_line(session_dir: &std::path::Path, event_type: &str, detail: &str) -> Result<(), String> {
-    let log_path = session_dir.join("api_calls.txt");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| e.to_string())?;
-    let timestamp = chrono::Local::now().to_rfc3339();
-    writeln!(file, "{timestamp} | {event_type} | {detail}").map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn open_session_folder(session_dir: String) -> Result<String, String> {
-    open_path_in_file_manager(&session_dir)?;
-    Ok("opened".to_string())
-}
-
-fn remove_session_catalog(path: &std::path::Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    if path.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(path).map_err(|e| e.to_string())
-    }
-}
-
-#[tauri::command]
-fn delete_session(
-    dirs: tauri::State<AppDirs>,
-    state: tauri::State<AppState>,
-    session_id: String,
-    force: Option<bool>,
-) -> Result<String, String> {
-    let force_delete = force.unwrap_or(false);
-    let active_session_id = state
-        .active_session
-        .lock()
-        .map_err(|_| "state lock poisoned".to_string())?
-        .as_ref()
-        .map(|meta| meta.session_id.clone());
-    if active_session_id.as_deref() == Some(session_id.as_str()) {
-        if !force_delete {
-            return Err("Cannot delete active recording session".to_string());
-        }
-        let mut capture_guard = state
-            .active_capture
-            .lock()
-            .map_err(|_| "capture state lock poisoned".to_string())?;
-        if let Some(capture) = capture_guard.take() {
-            let _ = capture.stop_and_take_artifacts();
-        }
-        drop(capture_guard);
-        let mut session_guard = state
-            .active_session
-            .lock()
-            .map_err(|_| "state lock poisoned".to_string())?;
-        *session_guard = None;
-        state.live_levels.reset();
-        set_tray_indicator_from_state(state.inner(), false);
-    }
-
-    let session_dir =
-        get_session_dir(&dirs.app_data_dir, &session_id)?.ok_or_else(|| "Session not found".to_string())?;
-    remove_session_catalog(&session_dir)?;
-    let deleted = repo_delete_session(&dirs.app_data_dir, &session_id)?;
-    if !deleted {
-        return Err("Session not found".to_string());
-    }
-    Ok("deleted".to_string())
-}
-
-#[tauri::command]
-fn list_sessions(dirs: tauri::State<AppDirs>) -> Result<Vec<SessionListItem>, String> {
-    let mut sessions = repo_list_sessions(&dirs.app_data_dir)?;
-    for item in &mut sessions {
-        let Ok(Some(meta_path)) = get_meta_path(&dirs.app_data_dir, &item.session_id) else {
-            continue;
-        };
-        let Ok(meta) = load_meta(&meta_path) else {
-            continue;
-        };
-
-        let session_dir = PathBuf::from(&item.session_dir);
-        let transcript_ok = file_has_non_empty_text(&session_dir.join(&meta.artifacts.transcript_file));
-        let summary_ok = file_has_non_empty_text(&session_dir.join(&meta.artifacts.summary_file));
-        item.audio_duration_hms = audio_duration_hms(&meta);
-
-        item.has_transcript_text = transcript_ok
-            && !matches!(meta.status, SessionStatus::Recording | SessionStatus::Recorded);
-        item.has_summary_text =
-            summary_ok && matches!(meta.status, SessionStatus::Summarized | SessionStatus::Done);
-    }
-    Ok(sessions)
-}
-
-#[tauri::command]
-fn get_ui_sync_state(state: tauri::State<AppState>) -> Result<UiSyncStateView, String> {
-    let ui = state
-        .ui_sync
-        .lock()
-        .map_err(|_| "ui state lock poisoned".to_string())?
-        .clone();
-    let active = state
-        .active_session
-        .lock()
-        .map_err(|_| "state lock poisoned".to_string())?;
-    let active_session_id = active.as_ref().map(|s| s.session_id.clone());
-    Ok(UiSyncStateView {
-        source: ui.source,
-        topic: ui.topic,
-        is_recording: active.is_some(),
-        active_session_id,
-    })
-}
-
-#[tauri::command]
-fn get_live_input_levels(state: tauri::State<AppState>) -> Result<LiveInputLevelsView, String> {
-    let levels = state.live_levels.snapshot();
-    Ok(LiveInputLevelsView {
-        mic: levels.mic,
-        system: levels.system,
-    })
-}
-
-#[tauri::command]
-fn set_ui_sync_state(
-    state: tauri::State<AppState>,
-    source: String,
-    topic: String,
-) -> Result<String, String> {
-    let mut ui = state
-        .ui_sync
-        .lock()
-        .map_err(|_| "ui state lock poisoned".to_string())?;
-    if !source.trim().is_empty() {
-        ui.source = source.trim().to_string();
-    }
-    ui.topic = topic;
-    Ok("updated".to_string())
-}
-
-#[tauri::command]
-fn get_session_meta(dirs: tauri::State<AppDirs>, session_id: String) -> Result<SessionMetaView, String> {
-    let meta_path = get_meta_path(&dirs.app_data_dir, &session_id)?
-        .ok_or_else(|| "Session not found".to_string())?;
-    let meta = load_meta(&meta_path)?;
-    let custom_tag = meta
-        .tags
-        .iter()
-        .skip(1)
-        .find(|v| !v.trim().is_empty())
-        .cloned()
-        .unwrap_or_default();
-    Ok(SessionMetaView {
-        session_id: meta.session_id,
-        source: meta.primary_tag,
-        custom_tag,
-        topic: meta.topic,
-        participants: meta.participants,
-    })
-}
-
-#[tauri::command]
-fn update_session_details(dirs: tauri::State<AppDirs>, payload: UpdateSessionDetailsRequest) -> Result<String, String> {
-    let meta_path = get_meta_path(&dirs.app_data_dir, &payload.session_id)?
-        .ok_or_else(|| "Session not found".to_string())?;
-    let mut meta = load_meta(&meta_path)?;
-
-    let source = if payload.source.trim().is_empty() {
-        meta.primary_tag.clone()
-    } else {
-        payload.source.trim().to_string()
-    };
-    let custom_tag = payload.custom_tag.trim().to_string();
-    let mut tags = vec![source.clone()];
-    if !custom_tag.is_empty() {
-        tags.push(custom_tag.clone());
-    }
-
-    meta.primary_tag = source;
-    meta.tags = tags;
-    meta.topic = payload.topic.trim().to_string();
-    meta.participants = payload
-        .participants
-        .into_iter()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .collect();
-
-    let session_dir = meta_path
-        .parent()
-        .ok_or_else(|| "Invalid session directory".to_string())?;
-    save_meta(&meta_path, &meta)?;
-    upsert_session(&dirs.app_data_dir, &meta, session_dir, &meta_path)?;
-    add_event(
-        &dirs.app_data_dir,
-        &meta.session_id,
-        "session_details_updated",
-        "Source/topic/participants updated",
-    )?;
-    Ok("updated".to_string())
-}
-
-#[tauri::command]
-fn set_api_secret(dirs: tauri::State<AppDirs>, name: String, value: String) -> Result<(), String> {
-    if name.trim().is_empty() {
-        return Err("Secret name must not be empty".to_string());
-    }
-    set_secret(&dirs.app_data_dir, name.trim(), value.trim())
-}
-
-#[tauri::command]
-fn get_api_secret(dirs: tauri::State<AppDirs>, name: String) -> Result<String, String> {
-    if name.trim().is_empty() {
-        return Err("Secret name must not be empty".to_string());
-    }
-    get_secret(&dirs.app_data_dir, name.trim())
-}
-
-#[tauri::command]
-fn start_recording(
-    dirs: tauri::State<AppDirs>,
-    state: tauri::State<AppState>,
-    payload: StartRecordingRequest,
-) -> Result<StartRecordingResponse, String> {
-    validate_start_request(&payload.topic, &payload.participants)?;
-
-    let mut guard = state
-        .active_session
-        .lock()
-        .map_err(|_| "state lock poisoned".to_string())?;
-
-    if guard.is_some() {
-        return Err("Recording already active".to_string());
-    }
-
-    let session_id = Uuid::new_v4().to_string();
-    let source_from_payload = payload
-        .tags
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "zoom".to_string());
-    let topic_from_payload = payload.topic.clone();
-    let meta = SessionMeta::new(
-        session_id.clone(),
-        payload.tags,
-        payload.topic,
-        payload.participants,
-    );
-
-    let settings = get_settings_from_dirs(dirs.inner())?;
-    let started_at: DateTime<Local> = DateTime::parse_from_rfc3339(&meta.started_at_iso)
-        .map_err(|e| e.to_string())?
-        .with_timezone(&Local);
-
-    let rel_dir = build_session_relative_dir(&meta.primary_tag, started_at);
-    let abs_dir = root_recordings_dir(&dirs.app_data_dir, &settings)?.join(&rel_dir);
-    fs::create_dir_all(&abs_dir).map_err(|e| e.to_string())?;
-
-    let mut meta = meta;
-    meta.artifacts = SessionArtifacts {
-        audio_file: "audio.opus".to_string(),
-        transcript_file: transcript_name(started_at),
-        summary_file: summary_name(started_at),
-        meta_file: "meta.json".to_string(),
-    };
-
-    save_meta(&abs_dir.join("meta.json"), &meta)?;
-    let data_dir = dirs.app_data_dir.clone();
-    upsert_session(&data_dir, &meta, &abs_dir, &abs_dir.join("meta.json"))?;
-    add_event(&data_dir, &meta.session_id, "recording_started", "Session created")?;
-
-    // Placeholder artifacts for pipeline integration
-    fs::write(abs_dir.join(&meta.artifacts.transcript_file), "").map_err(|e| e.to_string())?;
-    fs::write(abs_dir.join(&meta.artifacts.summary_file), "").map_err(|e| e.to_string())?;
-
-    let system_source = if settings.system_device_name.trim().is_empty() {
-        audio::capture::detect_system_source_device()?
-    } else {
-        Some(settings.system_device_name.clone())
-    };
-
-    let capture = audio::capture::ContinuousCapture::start(
-        if settings.mic_device_name.trim().is_empty() {
-            None
-        } else {
-            Some(settings.mic_device_name.clone())
-        },
-        system_source,
-        state.live_levels.clone(),
-    )?;
-    let mut cap_guard = state
-        .active_capture
-        .lock()
-        .map_err(|_| "capture state lock poisoned".to_string())?;
-    *cap_guard = Some(capture);
-
-    *guard = Some(meta.clone());
-    if let Ok(mut ui) = state.ui_sync.lock() {
-        ui.source = source_from_payload;
-        ui.topic = topic_from_payload;
-    }
-    set_tray_indicator_from_state(state.inner(), true);
-    Ok(StartRecordingResponse {
-        session_id,
-        session_dir: abs_dir.to_string_lossy().to_string(),
-        status: "recording".to_string(),
-    })
-}
-
-#[tauri::command]
-fn stop_recording(
-    dirs: tauri::State<AppDirs>,
-    state: tauri::State<AppState>,
-    session_id: String,
-) -> Result<String, String> {
-    stop_active_recording_internal(dirs.inner(), state.inner(), Some(session_id.as_str()), None)
-}
-
-#[tauri::command]
-fn stop_active_recording(
-    dirs: tauri::State<AppDirs>,
-    state: tauri::State<AppState>,
-) -> Result<String, String> {
-    stop_active_recording_internal(dirs.inner(), state.inner(), None, None)
-}
-
-#[tauri::command]
-async fn run_pipeline(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
-    run_pipeline_core(
-        dirs.inner().clone(),
-        &session_id,
-        PipelineInvocation::Run,
-        PipelineMode::Full,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn retry_pipeline(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
-    run_pipeline_core(
-        dirs.inner().clone(),
-        &session_id,
-        PipelineInvocation::Retry,
-        PipelineMode::Full,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn run_transcription(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
-    run_pipeline_core(
-        dirs.inner().clone(),
-        &session_id,
-        PipelineInvocation::Manual,
-        PipelineMode::TranscriptionOnly,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn run_summary(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
-    run_pipeline_core(
-        dirs.inner().clone(),
-        &session_id,
-        PipelineInvocation::Manual,
-        PipelineMode::SummaryOnly,
-    )
-    .await
-}
-
-async fn run_pipeline_core(
-    dirs: AppDirs,
-    session_id: &str,
-    invocation: PipelineInvocation,
-    mode: PipelineMode,
-) -> Result<String, String> {
-    let settings = get_settings_from_dirs(&dirs)?;
-    let data_dir = dirs.app_data_dir.clone();
-    let meta_path = get_meta_path(&data_dir, session_id)?.ok_or_else(|| "Session not found".to_string())?;
-    let mut meta = load_meta(&meta_path)?;
-    let session_dir = meta_path
-        .parent()
-        .ok_or_else(|| "Invalid session directory".to_string())?;
-    let api_logging_enabled = settings.api_call_logging_enabled;
-    let log_session_id = meta.session_id.clone();
-    let log_session_dir = session_dir.to_path_buf();
-    let log_api_call = |event_type: &str, detail: String| {
-        if api_logging_enabled {
-            let _ = add_event(&data_dir, &log_session_id, event_type, &detail);
-            let _ = append_api_call_log_line(&log_session_dir, event_type, &detail);
-        }
-    };
-
-    let audio_path = session_dir.join(&meta.artifacts.audio_file);
-    if !audio_path.exists() {
-        let detail = mark_pipeline_audio_missing(&mut meta);
-        save_meta(&meta_path, &meta)?;
-        upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-        add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
-        if should_schedule_retry(invocation) {
-            schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
-        }
-        return Err(detail);
-    }
-
-    let (nexara_key, nexara_key_lookup_err) = match get_secret(&dirs.app_data_dir, "NEXARA_API_KEY") {
-        Ok(value) => (value, None),
-        Err(err) => (String::new(), Some(err)),
-    };
-    let openai_key = get_secret(&dirs.app_data_dir, "OPENAI_API_KEY").unwrap_or_default();
-
-    let needs_transcription = matches!(mode, PipelineMode::Full | PipelineMode::TranscriptionOnly);
-    let needs_summary = matches!(mode, PipelineMode::Full | PipelineMode::SummaryOnly);
-
-    let mut transcript: Option<String> = None;
-    if needs_transcription {
-        log_api_call(
-            "api_transcription_request",
-            format!(
-                "url={} task={} diarization_setting={}",
-                settings.transcription_url.trim(),
-                settings.transcription_task.trim(),
-                settings.transcription_diarization_setting.trim()
-            ),
-        );
-        let transcribed = match pipeline::transcribe_audio(&settings, &nexara_key, &audio_path).await {
-            Ok(text) => text,
-            Err(err) => {
-                log_api_call("api_transcription_error", format!("error={err}"));
-                let err = if err.contains("No token specified") {
-                    if let Some(keyring_err) = nexara_key_lookup_err.as_ref() {
-                        format!("{err}. keyring lookup error for NEXARA_API_KEY: {keyring_err}")
-                    } else if nexara_key.trim().is_empty() {
-                        format!("{err}. NEXARA_API_KEY is empty")
-                    } else {
-                        err
-                    }
-                } else {
-                    err
-                };
-                let detail = mark_pipeline_transcription_failed(&mut meta, &err);
-                save_meta(&meta_path, &meta)?;
-                upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-                add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
-                if should_schedule_retry(invocation) {
-                    schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
-                }
-                return Err(err);
-            }
-        };
-        log_api_call(
-            "api_transcription_success",
-            format!("transcript_chars={}", transcribed.chars().count()),
-        );
-        fs::write(session_dir.join(&meta.artifacts.transcript_file), &transcribed).map_err(|e| e.to_string())?;
-        mark_pipeline_transcribed(&mut meta);
-        save_meta(&meta_path, &meta)?;
-        upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-        add_event(&data_dir, &meta.session_id, "transcribed", "Transcript created")?;
-        transcript = Some(transcribed);
-    }
-
-    if needs_summary {
-        let transcript_for_summary = if let Some(text) = transcript {
-            text
-        } else {
-            let transcript_path = session_dir.join(&meta.artifacts.transcript_file);
-            let text = fs::read_to_string(&transcript_path).map_err(|_| "Transcript file is missing".to_string())?;
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                return Err("Transcript file is empty".to_string());
-            }
-            trimmed.to_string()
-        };
-
-        log_api_call(
-            "api_summary_request",
-            format!(
-                "url={} model={} prompt_chars={}",
-                settings.summary_url.trim(),
-                settings.openai_model.trim(),
-                settings.summary_prompt.trim().chars().count()
-            ),
-        );
-        let summary = match pipeline::summarize_text(&settings, &openai_key, &transcript_for_summary).await {
-            Ok(text) => text,
-            Err(err) => {
-                log_api_call("api_summary_error", format!("error={err}"));
-                let detail = mark_pipeline_summary_failed(&mut meta, &err);
-                save_meta(&meta_path, &meta)?;
-                upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-                add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
-                if should_schedule_retry(invocation) {
-                    schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
-                }
-                return Err(err);
-            }
-        };
-        log_api_call(
-            "api_summary_success",
-            format!("summary_chars={}", summary.chars().count()),
-        );
-        fs::write(session_dir.join(&meta.artifacts.summary_file), &summary).map_err(|e| e.to_string())?;
-        mark_pipeline_done(&mut meta);
-        save_meta(&meta_path, &meta)?;
-        upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-        add_event(&data_dir, &meta.session_id, "pipeline_done", "Summary created")?;
-    }
-
-    if matches!(mode, PipelineMode::Full) {
-        clear_retry_job(&data_dir, &meta.session_id)?;
-        return Ok("done".to_string());
-    }
-    if matches!(mode, PipelineMode::TranscriptionOnly) {
-        return Ok("transcribed".to_string());
-    }
-    Ok("done".to_string())
-}
-
-fn schedule_retry_for_session(data_dir: &PathBuf, session_id: &str, error: &str) -> Result<(), String> {
-    match schedule_retry_job(data_dir, session_id, error, MAX_PIPELINE_RETRY_ATTEMPTS)? {
-        Some(attempt) => {
-            add_event(
-                data_dir,
-                session_id,
-                "pipeline_retry_scheduled",
-                &format!("Attempt {} scheduled due to: {}", attempt, error),
-            )?;
-        }
-        None => {
-            add_event(
-                data_dir,
-                session_id,
-                "pipeline_retry_exhausted",
-                "Retry attempts exhausted",
-            )?;
-        }
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 async fn process_retry_jobs_once(dirs: &AppDirs, now_epoch: i64, limit: usize) -> Result<(), String> {
-    let data_dir = dirs.app_data_dir.clone();
-    let jobs = fetch_due_retry_jobs(&data_dir, now_epoch, limit)?;
-    for job in jobs {
-        let session_id = job.session_id.clone();
-        let result = run_pipeline_core(
-            dirs.clone(),
-            &session_id,
-            PipelineInvocation::WorkerRetry,
-            PipelineMode::Full,
-        )
-        .await;
-        if result.is_ok() {
-            clear_retry_job(&data_dir, &session_id)?;
-            add_event(
-                &data_dir,
-                &session_id,
-                "pipeline_retry_success",
-                "Retry succeeded",
-            )?;
-        } else if let Err(err) = result {
-            schedule_retry_for_session(&data_dir, &session_id, &err)?;
-        }
-    }
-    Ok(())
-}
-
-fn spawn_retry_worker(dirs: AppDirs) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(RETRY_WORKER_POLL_SECONDS)).await;
-            let now = chrono::Utc::now().timestamp();
-            let _ = process_retry_jobs_once(&dirs, now, 10).await;
-        }
-    });
+    services::pipeline_runner::process_retry_jobs_once(dirs, now_epoch, limit).await
 }
 
 fn spawn_live_levels_worker(app: AppHandle, dirs: AppDirs) {
@@ -1401,7 +725,7 @@ mod ipc_runtime_tests {
         );
         meta.started_at_iso = "2026-03-11T10:00:00+03:00".to_string();
         meta.ended_at_iso = Some("2026-03-11T11:02:03+03:00".to_string());
-        assert_eq!(audio_duration_hms(&meta), "01:02:03");
+        assert_eq!(crate::storage::sqlite_repo::audio_duration_hms(&meta), "01:02:03");
     }
 
     #[test]
@@ -1432,6 +756,34 @@ mod ipc_runtime_tests {
             ..Default::default()
         };
         assert!(should_auto_run_pipeline_after_stop(&ready));
+    }
+
+    #[test]
+    fn preserves_raw_artifacts_in_session_dir_on_finalize_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_dir = temp.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+
+        let mic_src = temp.path().join("mic.raw");
+        let sys_src = temp.path().join("sys.raw");
+        std::fs::write(&mic_src, [1_u8, 2, 3, 4]).expect("write mic");
+        std::fs::write(&sys_src, [5_u8, 6, 7, 8]).expect("write system");
+
+        let artifacts = crate::audio::capture::CaptureArtifacts {
+            mic_path: mic_src.clone(),
+            mic_rate: 48_000,
+            system_path: Some(sys_src.clone()),
+            system_rate: 48_000,
+        };
+
+        let preserved = preserve_capture_artifacts_for_recovery(&session_dir, &artifacts)
+            .expect("preserve artifacts");
+
+        assert!(session_dir.join("audio_recovery_mic.raw").exists());
+        assert!(session_dir.join("audio_recovery_system.raw").exists());
+        assert!(!mic_src.exists());
+        assert!(!sys_src.exists());
+        assert_eq!(preserved.len(), 2);
     }
 
     fn invoke_request(cmd: &str, body: serde_json::Value) -> InvokeRequest {
@@ -1482,6 +834,7 @@ mod ipc_runtime_tests {
                 list_sessions,
                 get_live_input_levels,
                 open_session_folder,
+                open_session_artifact,
                 delete_session,
                 get_session_meta,
                 update_session_details,
@@ -1559,6 +912,7 @@ mod ipc_runtime_tests {
     fn seed_pipeline_ready_session(app_data_dir: &std::path::Path, session_id: &str, base_url: &str) {
         let settings = PublicSettings {
             recording_root: app_data_dir.join("recordings").to_string_lossy().to_string(),
+            artifact_open_app: String::new(),
             transcription_url: format!("{base_url}/transcribe"),
             transcription_task: "transcribe".to_string(),
             transcription_diarization_setting: "general".to_string(),
@@ -1593,6 +947,7 @@ mod ipc_runtime_tests {
     fn seed_pipeline_missing_audio_session(app_data_dir: &std::path::Path, session_id: &str, base_url: &str) {
         let settings = PublicSettings {
             recording_root: app_data_dir.join("recordings").to_string_lossy().to_string(),
+            artifact_open_app: String::new(),
             transcription_url: format!("{base_url}/transcribe"),
             transcription_task: "transcribe".to_string(),
             transcription_diarization_setting: "general".to_string(),
@@ -2273,6 +1628,7 @@ fn main() {
             open_settings_window,
             open_tray_window,
             open_session_folder,
+            open_session_artifact,
             delete_session,
             list_sessions,
             get_ui_sync_state,
