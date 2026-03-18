@@ -4,6 +4,7 @@ mod domain;
 mod pipeline;
 mod settings;
 mod storage;
+mod text_editors;
 
 use chrono::{DateTime, Local};
 use command_core::{
@@ -23,13 +24,15 @@ use std::sync::Mutex;
 use storage::fs_layout::{build_session_relative_dir, summary_name, transcript_name};
 use storage::session_store::{load_meta, save_meta};
 use storage::sqlite_repo::{
-    add_event, clear_retry_job, delete_session as repo_delete_session, fetch_due_retry_jobs, get_meta_path,
-    get_session_dir, list_sessions as repo_list_sessions, schedule_retry_job, upsert_session, SessionListItem,
+    add_event, clear_retry_job, delete_session as repo_delete_session, fetch_due_retry_jobs,
+    get_meta_path, get_session_dir, list_sessions as repo_list_sessions, schedule_retry_job,
+    upsert_session, SessionListItem,
 };
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Listener, Manager, PhysicalPosition, Position, Theme, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Listener, Manager, PhysicalPosition, Position, Theme, WebviewUrl,
+    WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{Builder as GlobalShortcutBuilder, ShortcutState};
 use uuid::Uuid;
@@ -152,7 +155,10 @@ fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("failed to resolve app data dir: {e}"))
 }
 
-fn root_recordings_dir(app_data_dir: &std::path::Path, settings: &PublicSettings) -> Result<PathBuf, String> {
+fn root_recordings_dir(
+    app_data_dir: &std::path::Path,
+    settings: &PublicSettings,
+) -> Result<PathBuf, String> {
     let root = PathBuf::from(&settings.recording_root);
     if root.is_absolute() {
         Ok(root)
@@ -269,7 +275,10 @@ fn should_hide_tray_popover_on_focus_lost(platform: &str, focused: bool) -> bool
     platform == "macos" && !focused
 }
 
-fn position_tray_popover(window: &tauri::WebviewWindow, anchor: PhysicalPosition<f64>) -> Result<(), String> {
+fn position_tray_popover(
+    window: &tauri::WebviewWindow,
+    anchor: PhysicalPosition<f64>,
+) -> Result<(), String> {
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let x = (anchor.x.round() as i32) - (size.width as i32 / 2);
     let y = (anchor.y.round() as i32) + 12;
@@ -279,7 +288,10 @@ fn position_tray_popover(window: &tauri::WebviewWindow, anchor: PhysicalPosition
     Ok(())
 }
 
-fn toggle_tray_window_visibility(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) -> Result<(), String> {
+fn toggle_tray_window_visibility(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("tray") {
         if window.is_visible().map_err(|e| e.to_string())? {
             window.hide().map_err(|e| e.to_string())?;
@@ -328,10 +340,17 @@ fn build_macos_app_menu(app: &tauri::App) -> Result<Menu<tauri::Wry>, String> {
         pkg_info.name.clone(),
         true,
         &[
-            &PredefinedMenuItem::about(app, None::<&str>, Some(about_metadata)).map_err(|e| e.to_string())?,
-            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
-            &MenuItem::with_id(app, "app_settings", "Settings", true, Some("CmdOrCtrl+," as &str))
+            &PredefinedMenuItem::about(app, None::<&str>, Some(about_metadata))
                 .map_err(|e| e.to_string())?,
+            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
+            &MenuItem::with_id(
+                app,
+                "app_settings",
+                "Settings",
+                true,
+                Some("CmdOrCtrl+," as &str),
+            )
+            .map_err(|e| e.to_string())?,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
             &PredefinedMenuItem::services(app, None::<&str>).map_err(|e| e.to_string())?,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
@@ -357,14 +376,9 @@ fn build_macos_app_menu(app: &tauri::App) -> Result<Menu<tauri::Wry>, String> {
     )
     .map_err(|e| e.to_string())?;
 
-    let help_menu = Submenu::with_id_and_items(
-        app,
-        tauri::menu::HELP_SUBMENU_ID,
-        "Help",
-        true,
-        &[],
-    )
-    .map_err(|e| e.to_string())?;
+    let help_menu =
+        Submenu::with_id_and_items(app, tauri::menu::HELP_SUBMENU_ID, "Help", true, &[])
+            .map_err(|e| e.to_string())?;
 
     Menu::with_items(
         app,
@@ -374,7 +388,8 @@ fn build_macos_app_menu(app: &tauri::App) -> Result<Menu<tauri::Wry>, String> {
                 app,
                 "File",
                 true,
-                &[&PredefinedMenuItem::close_window(app, None::<&str>).map_err(|e| e.to_string())?],
+                &[&PredefinedMenuItem::close_window(app, None::<&str>)
+                    .map_err(|e| e.to_string())?],
             )
             .map_err(|e| e.to_string())?,
             &Submenu::with_items(
@@ -388,7 +403,8 @@ fn build_macos_app_menu(app: &tauri::App) -> Result<Menu<tauri::Wry>, String> {
                     &PredefinedMenuItem::cut(app, None::<&str>).map_err(|e| e.to_string())?,
                     &PredefinedMenuItem::copy(app, None::<&str>).map_err(|e| e.to_string())?,
                     &PredefinedMenuItem::paste(app, None::<&str>).map_err(|e| e.to_string())?,
-                    &PredefinedMenuItem::select_all(app, None::<&str>).map_err(|e| e.to_string())?,
+                    &PredefinedMenuItem::select_all(app, None::<&str>)
+                        .map_err(|e| e.to_string())?,
                 ],
             )
             .map_err(|e| e.to_string())?,
@@ -396,7 +412,10 @@ fn build_macos_app_menu(app: &tauri::App) -> Result<Menu<tauri::Wry>, String> {
                 app,
                 "View",
                 true,
-                &[&PredefinedMenuItem::fullscreen(app, None::<&str>).map_err(|e| e.to_string())?],
+                &[
+                    &PredefinedMenuItem::fullscreen(app, None::<&str>)
+                        .map_err(|e| e.to_string())?,
+                ],
             )
             .map_err(|e| e.to_string())?,
             &window_menu,
@@ -458,13 +477,21 @@ fn is_recording_active(state: &AppState) -> bool {
 
 fn set_tray_indicator(app: &AppHandle, is_recording: bool) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-        let tooltip = if is_recording { "BigEcho REC" } else { "BigEcho IDLE" };
+        let tooltip = if is_recording {
+            "BigEcho REC"
+        } else {
+            "BigEcho IDLE"
+        };
         tray.set_tooltip(Some(tooltip)).map_err(|e| e.to_string())?;
         let theme = resolve_system_theme(app);
-        let icon = load_png_icon(tray_icon_bytes(choose_tray_icon_variant(theme, is_recording)))?;
+        let icon = load_png_icon(tray_icon_bytes(choose_tray_icon_variant(
+            theme,
+            is_recording,
+        )))?;
         tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
         #[cfg(target_os = "macos")]
-        tray.set_icon_as_template(false).map_err(|e| e.to_string())?;
+        tray.set_icon_as_template(false)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -577,7 +604,12 @@ fn stop_active_recording_internal(
     save_meta(&abs_dir.join("meta.json"), &meta)?;
     let data_dir = dirs.app_data_dir.clone();
     upsert_session(&data_dir, &meta, &abs_dir, &abs_dir.join("meta.json"))?;
-    add_event(&data_dir, &meta.session_id, "recording_stopped", "Audio capture stopped")?;
+    add_event(
+        &data_dir,
+        &meta.session_id,
+        "recording_stopped",
+        "Audio capture stopped",
+    )?;
 
     let mut cap_guard = state
         .active_capture
@@ -634,7 +666,10 @@ fn get_settings(dirs: tauri::State<AppDirs>) -> Result<PublicSettings, String> {
 }
 
 #[tauri::command]
-fn save_public_settings(dirs: tauri::State<AppDirs>, payload: PublicSettings) -> Result<(), String> {
+fn save_public_settings(
+    dirs: tauri::State<AppDirs>,
+    payload: PublicSettings,
+) -> Result<(), String> {
     save_settings(&dirs.app_data_dir, &payload)
 }
 
@@ -646,6 +681,11 @@ fn list_audio_input_devices() -> Result<Vec<String>, String> {
 #[tauri::command]
 fn detect_system_source_device() -> Result<Option<String>, String> {
     audio::capture::detect_system_source_device()
+}
+
+#[tauri::command]
+fn list_text_editor_apps() -> Result<text_editors::TextEditorAppsResponse, String> {
+    Ok(text_editors::list_text_editor_apps())
 }
 
 #[tauri::command]
@@ -683,11 +723,17 @@ fn open_path_in_file_manager(path: &str) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("failed to open session folder: exit status {status}"))
+        Err(format!(
+            "failed to open session folder: exit status {status}"
+        ))
     }
 }
 
-fn append_api_call_log_line(session_dir: &std::path::Path, event_type: &str, detail: &str) -> Result<(), String> {
+fn append_api_call_log_line(
+    session_dir: &std::path::Path,
+    event_type: &str,
+    detail: &str,
+) -> Result<(), String> {
     let log_path = session_dir.join("api_calls.txt");
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -751,8 +797,8 @@ fn delete_session(
         set_tray_indicator_from_state(state.inner(), false);
     }
 
-    let session_dir =
-        get_session_dir(&dirs.app_data_dir, &session_id)?.ok_or_else(|| "Session not found".to_string())?;
+    let session_dir = get_session_dir(&dirs.app_data_dir, &session_id)?
+        .ok_or_else(|| "Session not found".to_string())?;
     remove_session_catalog(&session_dir)?;
     let deleted = repo_delete_session(&dirs.app_data_dir, &session_id)?;
     if !deleted {
@@ -773,12 +819,16 @@ fn list_sessions(dirs: tauri::State<AppDirs>) -> Result<Vec<SessionListItem>, St
         };
 
         let session_dir = PathBuf::from(&item.session_dir);
-        let transcript_ok = file_has_non_empty_text(&session_dir.join(&meta.artifacts.transcript_file));
+        let transcript_ok =
+            file_has_non_empty_text(&session_dir.join(&meta.artifacts.transcript_file));
         let summary_ok = file_has_non_empty_text(&session_dir.join(&meta.artifacts.summary_file));
         item.audio_duration_hms = audio_duration_hms(&meta);
 
         item.has_transcript_text = transcript_ok
-            && !matches!(meta.status, SessionStatus::Recording | SessionStatus::Recorded);
+            && !matches!(
+                meta.status,
+                SessionStatus::Recording | SessionStatus::Recorded
+            );
         item.has_summary_text =
             summary_ok && matches!(meta.status, SessionStatus::Summarized | SessionStatus::Done);
     }
@@ -832,7 +882,10 @@ fn set_ui_sync_state(
 }
 
 #[tauri::command]
-fn get_session_meta(dirs: tauri::State<AppDirs>, session_id: String) -> Result<SessionMetaView, String> {
+fn get_session_meta(
+    dirs: tauri::State<AppDirs>,
+    session_id: String,
+) -> Result<SessionMetaView, String> {
     let meta_path = get_meta_path(&dirs.app_data_dir, &session_id)?
         .ok_or_else(|| "Session not found".to_string())?;
     let meta = load_meta(&meta_path)?;
@@ -853,7 +906,10 @@ fn get_session_meta(dirs: tauri::State<AppDirs>, session_id: String) -> Result<S
 }
 
 #[tauri::command]
-fn update_session_details(dirs: tauri::State<AppDirs>, payload: UpdateSessionDetailsRequest) -> Result<String, String> {
+fn update_session_details(
+    dirs: tauri::State<AppDirs>,
+    payload: UpdateSessionDetailsRequest,
+) -> Result<String, String> {
     let meta_path = get_meta_path(&dirs.app_data_dir, &payload.session_id)?
         .ok_or_else(|| "Session not found".to_string())?;
     let mut meta = load_meta(&meta_path)?;
@@ -960,7 +1016,12 @@ fn start_recording(
     save_meta(&abs_dir.join("meta.json"), &meta)?;
     let data_dir = dirs.app_data_dir.clone();
     upsert_session(&data_dir, &meta, &abs_dir, &abs_dir.join("meta.json"))?;
-    add_event(&data_dir, &meta.session_id, "recording_started", "Session created")?;
+    add_event(
+        &data_dir,
+        &meta.session_id,
+        "recording_started",
+        "Session created",
+    )?;
 
     // Placeholder artifacts for pipeline integration
     fs::write(abs_dir.join(&meta.artifacts.transcript_file), "").map_err(|e| e.to_string())?;
@@ -1018,7 +1079,10 @@ fn stop_active_recording(
 }
 
 #[tauri::command]
-async fn run_pipeline(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
+async fn run_pipeline(
+    dirs: tauri::State<'_, AppDirs>,
+    session_id: String,
+) -> Result<String, String> {
     run_pipeline_core(
         dirs.inner().clone(),
         &session_id,
@@ -1029,7 +1093,10 @@ async fn run_pipeline(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Re
 }
 
 #[tauri::command]
-async fn retry_pipeline(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
+async fn retry_pipeline(
+    dirs: tauri::State<'_, AppDirs>,
+    session_id: String,
+) -> Result<String, String> {
     run_pipeline_core(
         dirs.inner().clone(),
         &session_id,
@@ -1040,7 +1107,10 @@ async fn retry_pipeline(dirs: tauri::State<'_, AppDirs>, session_id: String) -> 
 }
 
 #[tauri::command]
-async fn run_transcription(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
+async fn run_transcription(
+    dirs: tauri::State<'_, AppDirs>,
+    session_id: String,
+) -> Result<String, String> {
     run_pipeline_core(
         dirs.inner().clone(),
         &session_id,
@@ -1051,7 +1121,10 @@ async fn run_transcription(dirs: tauri::State<'_, AppDirs>, session_id: String) 
 }
 
 #[tauri::command]
-async fn run_summary(dirs: tauri::State<'_, AppDirs>, session_id: String) -> Result<String, String> {
+async fn run_summary(
+    dirs: tauri::State<'_, AppDirs>,
+    session_id: String,
+) -> Result<String, String> {
     run_pipeline_core(
         dirs.inner().clone(),
         &session_id,
@@ -1069,7 +1142,8 @@ async fn run_pipeline_core(
 ) -> Result<String, String> {
     let settings = get_settings_from_dirs(&dirs)?;
     let data_dir = dirs.app_data_dir.clone();
-    let meta_path = get_meta_path(&data_dir, session_id)?.ok_or_else(|| "Session not found".to_string())?;
+    let meta_path =
+        get_meta_path(&data_dir, session_id)?.ok_or_else(|| "Session not found".to_string())?;
     let mut meta = load_meta(&meta_path)?;
     let session_dir = meta_path
         .parent()
@@ -1096,7 +1170,8 @@ async fn run_pipeline_core(
         return Err(detail);
     }
 
-    let (nexara_key, nexara_key_lookup_err) = match get_secret(&dirs.app_data_dir, "NEXARA_API_KEY") {
+    let (nexara_key, nexara_key_lookup_err) = match get_secret(&dirs.app_data_dir, "NEXARA_API_KEY")
+    {
         Ok(value) => (value, None),
         Err(err) => (String::new(), Some(err)),
     };
@@ -1116,40 +1191,50 @@ async fn run_pipeline_core(
                 settings.transcription_diarization_setting.trim()
             ),
         );
-        let transcribed = match pipeline::transcribe_audio(&settings, &nexara_key, &audio_path).await {
-            Ok(text) => text,
-            Err(err) => {
-                log_api_call("api_transcription_error", format!("error={err}"));
-                let err = if err.contains("No token specified") {
-                    if let Some(keyring_err) = nexara_key_lookup_err.as_ref() {
-                        format!("{err}. keyring lookup error for NEXARA_API_KEY: {keyring_err}")
-                    } else if nexara_key.trim().is_empty() {
-                        format!("{err}. NEXARA_API_KEY is empty")
+        let transcribed =
+            match pipeline::transcribe_audio(&settings, &nexara_key, &audio_path).await {
+                Ok(text) => text,
+                Err(err) => {
+                    log_api_call("api_transcription_error", format!("error={err}"));
+                    let err = if err.contains("No token specified") {
+                        if let Some(keyring_err) = nexara_key_lookup_err.as_ref() {
+                            format!("{err}. keyring lookup error for NEXARA_API_KEY: {keyring_err}")
+                        } else if nexara_key.trim().is_empty() {
+                            format!("{err}. NEXARA_API_KEY is empty")
+                        } else {
+                            err
+                        }
                     } else {
                         err
+                    };
+                    let detail = mark_pipeline_transcription_failed(&mut meta, &err);
+                    save_meta(&meta_path, &meta)?;
+                    upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
+                    add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
+                    if should_schedule_retry(invocation) {
+                        schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
                     }
-                } else {
-                    err
-                };
-                let detail = mark_pipeline_transcription_failed(&mut meta, &err);
-                save_meta(&meta_path, &meta)?;
-                upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-                add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
-                if should_schedule_retry(invocation) {
-                    schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
+                    return Err(err);
                 }
-                return Err(err);
-            }
-        };
+            };
         log_api_call(
             "api_transcription_success",
             format!("transcript_chars={}", transcribed.chars().count()),
         );
-        fs::write(session_dir.join(&meta.artifacts.transcript_file), &transcribed).map_err(|e| e.to_string())?;
+        fs::write(
+            session_dir.join(&meta.artifacts.transcript_file),
+            &transcribed,
+        )
+        .map_err(|e| e.to_string())?;
         mark_pipeline_transcribed(&mut meta);
         save_meta(&meta_path, &meta)?;
         upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-        add_event(&data_dir, &meta.session_id, "transcribed", "Transcript created")?;
+        add_event(
+            &data_dir,
+            &meta.session_id,
+            "transcribed",
+            "Transcript created",
+        )?;
         transcript = Some(transcribed);
     }
 
@@ -1158,7 +1243,8 @@ async fn run_pipeline_core(
             text
         } else {
             let transcript_path = session_dir.join(&meta.artifacts.transcript_file);
-            let text = fs::read_to_string(&transcript_path).map_err(|_| "Transcript file is missing".to_string())?;
+            let text = fs::read_to_string(&transcript_path)
+                .map_err(|_| "Transcript file is missing".to_string())?;
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 return Err("Transcript file is empty".to_string());
@@ -1175,29 +1261,36 @@ async fn run_pipeline_core(
                 settings.summary_prompt.trim().chars().count()
             ),
         );
-        let summary = match pipeline::summarize_text(&settings, &openai_key, &transcript_for_summary).await {
-            Ok(text) => text,
-            Err(err) => {
-                log_api_call("api_summary_error", format!("error={err}"));
-                let detail = mark_pipeline_summary_failed(&mut meta, &err);
-                save_meta(&meta_path, &meta)?;
-                upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-                add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
-                if should_schedule_retry(invocation) {
-                    schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
+        let summary =
+            match pipeline::summarize_text(&settings, &openai_key, &transcript_for_summary).await {
+                Ok(text) => text,
+                Err(err) => {
+                    log_api_call("api_summary_error", format!("error={err}"));
+                    let detail = mark_pipeline_summary_failed(&mut meta, &err);
+                    save_meta(&meta_path, &meta)?;
+                    upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
+                    add_event(&data_dir, &meta.session_id, "pipeline_failed", &detail)?;
+                    if should_schedule_retry(invocation) {
+                        schedule_retry_for_session(&data_dir, &meta.session_id, &detail)?;
+                    }
+                    return Err(err);
                 }
-                return Err(err);
-            }
-        };
+            };
         log_api_call(
             "api_summary_success",
             format!("summary_chars={}", summary.chars().count()),
         );
-        fs::write(session_dir.join(&meta.artifacts.summary_file), &summary).map_err(|e| e.to_string())?;
+        fs::write(session_dir.join(&meta.artifacts.summary_file), &summary)
+            .map_err(|e| e.to_string())?;
         mark_pipeline_done(&mut meta);
         save_meta(&meta_path, &meta)?;
         upsert_session(&data_dir, &meta, session_dir, &meta_path)?;
-        add_event(&data_dir, &meta.session_id, "pipeline_done", "Summary created")?;
+        add_event(
+            &data_dir,
+            &meta.session_id,
+            "pipeline_done",
+            "Summary created",
+        )?;
     }
 
     if matches!(mode, PipelineMode::Full) {
@@ -1210,7 +1303,11 @@ async fn run_pipeline_core(
     Ok("done".to_string())
 }
 
-fn schedule_retry_for_session(data_dir: &PathBuf, session_id: &str, error: &str) -> Result<(), String> {
+fn schedule_retry_for_session(
+    data_dir: &PathBuf,
+    session_id: &str,
+    error: &str,
+) -> Result<(), String> {
     match schedule_retry_job(data_dir, session_id, error, MAX_PIPELINE_RETRY_ATTEMPTS)? {
         Some(attempt) => {
             add_event(
@@ -1232,7 +1329,11 @@ fn schedule_retry_for_session(data_dir: &PathBuf, session_id: &str, error: &str)
     Ok(())
 }
 
-async fn process_retry_jobs_once(dirs: &AppDirs, now_epoch: i64, limit: usize) -> Result<(), String> {
+async fn process_retry_jobs_once(
+    dirs: &AppDirs,
+    now_epoch: i64,
+    limit: usize,
+) -> Result<(), String> {
     let data_dir = dirs.app_data_dir.clone();
     let jobs = fetch_due_retry_jobs(&data_dir, now_epoch, limit)?;
     for job in jobs {
@@ -1283,7 +1384,11 @@ fn spawn_live_levels_worker(app: AppHandle, dirs: AppDirs) {
                     let system = settings.system_device_name.trim().to_string();
                     (
                         if mic.is_empty() { None } else { Some(mic) },
-                        if system.is_empty() { None } else { Some(system) },
+                        if system.is_empty() {
+                            None
+                        } else {
+                            Some(system)
+                        },
                     )
                 } else {
                     (None, None)
@@ -1332,11 +1437,12 @@ mod ipc_runtime_tests {
     use std::net::{TcpListener, TcpStream};
     use std::thread;
 
+    use serde_json::json;
     use storage::session_store::{load_meta, save_meta};
     use storage::sqlite_repo::{
-        fetch_due_retry_jobs, list_session_events, list_sessions, schedule_retry_job, upsert_session,
+        fetch_due_retry_jobs, list_session_events, list_sessions, schedule_retry_job,
+        upsert_session,
     };
-    use serde_json::json;
     use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
     use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
     use tauri::webview::InvokeRequest;
@@ -1467,7 +1573,8 @@ mod ipc_runtime_tests {
     fn build_test_app() -> (tauri::App<tauri::test::MockRuntime>, std::path::PathBuf) {
         let mut ctx = mock_context(noop_assets());
         ctx.config_mut().identifier = "dev.bigecho.tests".to_string();
-        let app_data_dir = std::env::temp_dir().join(format!("bigecho_test_{}", uuid::Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("bigecho_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&app_data_dir).expect("create app-data");
         let dirs = AppDirs {
             app_data_dir: app_data_dir.clone(),
@@ -1556,9 +1663,16 @@ mod ipc_runtime_tests {
         stream.flush().expect("flush response");
     }
 
-    fn seed_pipeline_ready_session(app_data_dir: &std::path::Path, session_id: &str, base_url: &str) {
+    fn seed_pipeline_ready_session(
+        app_data_dir: &std::path::Path,
+        session_id: &str,
+        base_url: &str,
+    ) {
         let settings = PublicSettings {
-            recording_root: app_data_dir.join("recordings").to_string_lossy().to_string(),
+            recording_root: app_data_dir
+                .join("recordings")
+                .to_string_lossy()
+                .to_string(),
             transcription_url: format!("{base_url}/transcribe"),
             transcription_task: "transcribe".to_string(),
             transcription_diarization_setting: "general".to_string(),
@@ -1568,6 +1682,7 @@ mod ipc_runtime_tests {
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
@@ -1590,9 +1705,16 @@ mod ipc_runtime_tests {
         upsert_session(app_data_dir, &meta, &session_dir, &meta_path).expect("upsert session");
     }
 
-    fn seed_pipeline_missing_audio_session(app_data_dir: &std::path::Path, session_id: &str, base_url: &str) {
+    fn seed_pipeline_missing_audio_session(
+        app_data_dir: &std::path::Path,
+        session_id: &str,
+        base_url: &str,
+    ) {
         let settings = PublicSettings {
-            recording_root: app_data_dir.join("recordings").to_string_lossy().to_string(),
+            recording_root: app_data_dir
+                .join("recordings")
+                .to_string_lossy()
+                .to_string(),
             transcription_url: format!("{base_url}/transcribe"),
             transcription_task: "transcribe".to_string(),
             transcription_diarization_setting: "general".to_string(),
@@ -1602,6 +1724,7 @@ mod ipc_runtime_tests {
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
@@ -1681,7 +1804,10 @@ mod ipc_runtime_tests {
         assert_eq!(details.source, "telegram");
         assert_eq!(details.custom_tag, "client-a");
         assert_eq!(details.topic, "");
-        assert_eq!(details.participants, vec!["Alice".to_string(), "Bob".to_string()]);
+        assert_eq!(
+            details.participants,
+            vec!["Alice".to_string(), "Bob".to_string()]
+        );
     }
 
     #[test]
@@ -1735,14 +1861,14 @@ mod ipc_runtime_tests {
         );
 
         let session_dir = app_data_dir.join("sessions").join("session-success");
-        let transcript = std::fs::read_to_string(session_dir.join("transcript.txt"))
-            .expect("read transcript");
-        let summary = std::fs::read_to_string(session_dir.join("summary.txt"))
-            .expect("read summary");
+        let transcript =
+            std::fs::read_to_string(session_dir.join("transcript.txt")).expect("read transcript");
+        let summary =
+            std::fs::read_to_string(session_dir.join("summary.txt")).expect("read summary");
         assert_eq!(transcript, "mock transcript");
         assert_eq!(summary, "mock summary");
-        let api_log = std::fs::read_to_string(session_dir.join("api_calls.txt"))
-            .expect("read api_calls.txt");
+        let api_log =
+            std::fs::read_to_string(session_dir.join("api_calls.txt")).expect("read api_calls.txt");
         assert!(api_log.contains("api_transcription_request"));
         assert!(api_log.contains("api_transcription_success"));
         assert!(api_log.contains("api_summary_request"));
@@ -1755,30 +1881,19 @@ mod ipc_runtime_tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].status, "done");
 
-        let due_retry = fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch retry jobs");
+        let due_retry =
+            fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch retry jobs");
         assert!(due_retry.is_empty());
 
         let events = list_session_events(&app_data_dir, "session-success").expect("load events");
-        assert!(
-            events
-                .iter()
-                .any(|e| e.event_type == "api_transcription_request")
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e.event_type == "api_transcription_success")
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e.event_type == "api_summary_request")
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e.event_type == "api_summary_success")
-        );
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "api_transcription_request"));
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "api_transcription_success"));
+        assert!(events.iter().any(|e| e.event_type == "api_summary_request"));
+        assert!(events.iter().any(|e| e.event_type == "api_summary_success"));
     }
 
     #[test]
@@ -1792,7 +1907,10 @@ mod ipc_runtime_tests {
 
         let response = get_ipc_response(
             &webview,
-            invoke_request("retry_pipeline", json!({ "sessionId":"session-retry-success" })),
+            invoke_request(
+                "retry_pipeline",
+                json!({ "sessionId":"session-retry-success" }),
+            ),
         )
         .expect("retry_pipeline should succeed");
         assert_eq!(
@@ -1801,10 +1919,10 @@ mod ipc_runtime_tests {
         );
 
         let session_dir = app_data_dir.join("sessions").join("session-retry-success");
-        let transcript = std::fs::read_to_string(session_dir.join("transcript.txt"))
-            .expect("read transcript");
-        let summary = std::fs::read_to_string(session_dir.join("summary.txt"))
-            .expect("read summary");
+        let transcript =
+            std::fs::read_to_string(session_dir.join("transcript.txt")).expect("read transcript");
+        let summary =
+            std::fs::read_to_string(session_dir.join("summary.txt")).expect("read summary");
         assert_eq!(transcript, "mock transcript");
         assert_eq!(summary, "mock summary");
 
@@ -1823,17 +1941,22 @@ mod ipc_runtime_tests {
 
         let response = get_ipc_response(
             &webview,
-            invoke_request("run_transcription", json!({ "sessionId":"session-get-text" })),
+            invoke_request(
+                "run_transcription",
+                json!({ "sessionId":"session-get-text" }),
+            ),
         )
         .expect("run_transcription should succeed");
         assert_eq!(
-            response.deserialize::<String>().expect("transcribed string"),
+            response
+                .deserialize::<String>()
+                .expect("transcribed string"),
             "transcribed".to_string()
         );
 
         let session_dir = app_data_dir.join("sessions").join("session-get-text");
-        let transcript = std::fs::read_to_string(session_dir.join("transcript.txt"))
-            .expect("read transcript");
+        let transcript =
+            std::fs::read_to_string(session_dir.join("transcript.txt")).expect("read transcript");
         assert_eq!(transcript, "mock transcript");
         assert!(!session_dir.join("summary.txt").exists());
 
@@ -1850,7 +1973,8 @@ mod ipc_runtime_tests {
         let base_url = spawn_mock_pipeline_server();
         seed_pipeline_ready_session(&app_data_dir, "session-summary-only", &base_url);
         let session_dir = app_data_dir.join("sessions").join("session-summary-only");
-        std::fs::write(session_dir.join("transcript.txt"), "existing transcript").expect("write transcript");
+        std::fs::write(session_dir.join("transcript.txt"), "existing transcript")
+            .expect("write transcript");
 
         let response = get_ipc_response(
             &webview,
@@ -1862,8 +1986,8 @@ mod ipc_runtime_tests {
             "done".to_string()
         );
 
-        let summary = std::fs::read_to_string(session_dir.join("summary.txt"))
-            .expect("read summary");
+        let summary =
+            std::fs::read_to_string(session_dir.join("summary.txt")).expect("read summary");
         assert_eq!(summary, "mock summary");
     }
 
@@ -1879,12 +2003,16 @@ mod ipc_runtime_tests {
 
         let response = get_ipc_response(
             &webview,
-            invoke_request("retry_pipeline", json!({ "sessionId":"session-retry-failed" })),
+            invoke_request(
+                "retry_pipeline",
+                json!({ "sessionId":"session-retry-failed" }),
+            ),
         );
         let err = response.expect_err("retry_pipeline should fail");
         assert_eq!(extract_err_string(err), "Audio file is missing");
 
-        let due_retry = fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch retry jobs");
+        let due_retry =
+            fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch retry jobs");
         assert_eq!(due_retry.len(), 1);
         assert_eq!(due_retry[0].session_id, "session-retry-failed");
         assert_eq!(due_retry[0].attempts, 1);
@@ -1901,7 +2029,10 @@ mod ipc_runtime_tests {
 
         let session_dir = app_data_dir.join("sessions").join("session-delete");
         assert!(session_dir.exists());
-        assert_eq!(list_sessions(&app_data_dir).expect("list sessions").len(), 1);
+        assert_eq!(
+            list_sessions(&app_data_dir).expect("list sessions").len(),
+            1
+        );
 
         let response = get_ipc_response(
             &webview,
@@ -1914,7 +2045,9 @@ mod ipc_runtime_tests {
         );
 
         assert!(!session_dir.exists());
-        assert!(list_sessions(&app_data_dir).expect("list sessions").is_empty());
+        assert!(list_sessions(&app_data_dir)
+            .expect("list sessions")
+            .is_empty());
         assert!(list_session_events(&app_data_dir, "session-delete")
             .expect("load events")
             .is_empty());
@@ -1942,7 +2075,10 @@ mod ipc_runtime_tests {
 
         let blocked = get_ipc_response(
             &webview,
-            invoke_request("delete_session", json!({ "sessionId":"session-delete-active" })),
+            invoke_request(
+                "delete_session",
+                json!({ "sessionId":"session-delete-active" }),
+            ),
         )
         .expect_err("delete_session without force should fail");
         assert_eq!(
@@ -1966,17 +2102,16 @@ mod ipc_runtime_tests {
         let state = app.state::<AppState>();
         let active = state.active_session.lock().expect("active session lock");
         assert!(active.is_none());
-        assert!(
-            !app_data_dir
-                .join("sessions")
-                .join("session-delete-active")
-                .exists()
-        );
+        assert!(!app_data_dir
+            .join("sessions")
+            .join("session-delete-active")
+            .exists());
     }
 
     #[test]
     fn retry_worker_exhausts_attempts_and_clears_job() {
-        let app_data_dir = std::env::temp_dir().join(format!("bigecho_worker_{}", uuid::Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("bigecho_worker_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&app_data_dir).expect("create app data");
         let dirs = AppDirs {
             app_data_dir: app_data_dir.clone(),
@@ -1995,7 +2130,8 @@ mod ipc_runtime_tests {
             .expect("seed retry attempt");
         }
 
-        let initial_jobs = fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch initial jobs");
+        let initial_jobs =
+            fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch initial jobs");
         assert_eq!(initial_jobs.len(), 1);
         assert_eq!(initial_jobs[0].attempts, MAX_PIPELINE_RETRY_ATTEMPTS);
 
@@ -2011,21 +2147,21 @@ mod ipc_runtime_tests {
 
         schedule_retry_for_session(&app_data_dir, "session-worker-exhaust", &err)
             .expect("schedule followup retry");
-        let final_jobs = fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch final jobs");
+        let final_jobs =
+            fetch_due_retry_jobs(&app_data_dir, i64::MAX, 10).expect("fetch final jobs");
         assert!(final_jobs.is_empty());
 
         let events =
             list_session_events(&app_data_dir, "session-worker-exhaust").expect("load event log");
-        assert!(
-            events
-                .iter()
-                .any(|e| e.event_type == "pipeline_retry_exhausted")
-        );
+        assert!(events
+            .iter()
+            .any(|e| e.event_type == "pipeline_retry_exhausted"));
     }
 
     #[test]
     fn retry_worker_process_once_handles_partial_failures() {
-        let app_data_dir = std::env::temp_dir().join(format!("bigecho_worker_mix_{}", uuid::Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("bigecho_worker_mix_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&app_data_dir).expect("create app data");
         let dirs = AppDirs {
             app_data_dir: app_data_dir.clone(),
@@ -2035,8 +2171,13 @@ mod ipc_runtime_tests {
         seed_pipeline_ready_session(&app_data_dir, "session-worker-ok", &base_url);
         seed_pipeline_missing_audio_session(&app_data_dir, "session-worker-fail", &base_url);
 
-        schedule_retry_job(&app_data_dir, "session-worker-ok", "seed retry", MAX_PIPELINE_RETRY_ATTEMPTS)
-            .expect("schedule ok");
+        schedule_retry_job(
+            &app_data_dir,
+            "session-worker-ok",
+            "seed retry",
+            MAX_PIPELINE_RETRY_ATTEMPTS,
+        )
+        .expect("schedule ok");
         schedule_retry_job(
             &app_data_dir,
             "session-worker-fail",
@@ -2049,10 +2190,20 @@ mod ipc_runtime_tests {
         rt.block_on(process_retry_jobs_once(&dirs, i64::MAX, 10))
             .expect("process retry jobs");
 
-        let ok_meta = load_meta(&app_data_dir.join("sessions").join("session-worker-ok").join("meta.json"))
-            .expect("load ok meta");
-        let fail_meta = load_meta(&app_data_dir.join("sessions").join("session-worker-fail").join("meta.json"))
-            .expect("load fail meta");
+        let ok_meta = load_meta(
+            &app_data_dir
+                .join("sessions")
+                .join("session-worker-ok")
+                .join("meta.json"),
+        )
+        .expect("load ok meta");
+        let fail_meta = load_meta(
+            &app_data_dir
+                .join("sessions")
+                .join("session-worker-fail")
+                .join("meta.json"),
+        )
+        .expect("load fail meta");
         assert_eq!(ok_meta.status, SessionStatus::Done);
         assert_eq!(fail_meta.status, SessionStatus::Failed);
 
@@ -2062,22 +2213,20 @@ mod ipc_runtime_tests {
         assert_eq!(due_jobs[0].attempts, 2);
 
         let ok_events = list_session_events(&app_data_dir, "session-worker-ok").expect("ok events");
-        let fail_events = list_session_events(&app_data_dir, "session-worker-fail").expect("fail events");
-        assert!(
-            ok_events
-                .iter()
-                .any(|e| e.event_type == "pipeline_retry_success")
-        );
-        assert!(
-            fail_events
-                .iter()
-                .any(|e| e.event_type == "pipeline_retry_scheduled")
-        );
+        let fail_events =
+            list_session_events(&app_data_dir, "session-worker-fail").expect("fail events");
+        assert!(ok_events
+            .iter()
+            .any(|e| e.event_type == "pipeline_retry_success"));
+        assert!(fail_events
+            .iter()
+            .any(|e| e.event_type == "pipeline_retry_scheduled"));
     }
 
     #[test]
     fn retry_worker_process_once_respects_limit() {
-        let app_data_dir = std::env::temp_dir().join(format!("bigecho_worker_limit_{}", uuid::Uuid::new_v4()));
+        let app_data_dir =
+            std::env::temp_dir().join(format!("bigecho_worker_limit_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&app_data_dir).expect("create app data");
         let dirs = AppDirs {
             app_data_dir: app_data_dir.clone(),
@@ -2087,10 +2236,20 @@ mod ipc_runtime_tests {
         seed_pipeline_missing_audio_session(&app_data_dir, "session-limit-a", &base_url);
         seed_pipeline_missing_audio_session(&app_data_dir, "session-limit-b", &base_url);
 
-        schedule_retry_job(&app_data_dir, "session-limit-a", "seed retry", MAX_PIPELINE_RETRY_ATTEMPTS)
-            .expect("schedule a");
-        schedule_retry_job(&app_data_dir, "session-limit-b", "seed retry", MAX_PIPELINE_RETRY_ATTEMPTS)
-            .expect("schedule b");
+        schedule_retry_job(
+            &app_data_dir,
+            "session-limit-a",
+            "seed retry",
+            MAX_PIPELINE_RETRY_ATTEMPTS,
+        )
+        .expect("schedule a");
+        schedule_retry_job(
+            &app_data_dir,
+            "session-limit-b",
+            "seed retry",
+            MAX_PIPELINE_RETRY_ATTEMPTS,
+        )
+        .expect("schedule b");
 
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(process_retry_jobs_once(&dirs, i64::MAX, 1))
@@ -2167,9 +2326,17 @@ fn main() {
 
         let menu = Menu::with_items(
             app,
-            &[&open_item, &recorder_item, &toggle_item, &start_item, &stop_item, &settings_item, &quit_item],
+            &[
+                &open_item,
+                &recorder_item,
+                &toggle_item,
+                &start_item,
+                &stop_item,
+                &settings_item,
+                &quit_item,
+            ],
         )
-            .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
         let initial_tray_icon = load_png_icon(tray_icon_bytes(choose_tray_icon_variant(
             resolve_system_theme(&app.handle()),
@@ -2202,7 +2369,12 @@ fn main() {
                         let _ = app.emit("tray:stop", ());
                         let state = app.state::<AppState>();
                         let dirs = app.state::<AppDirs>();
-                        let _ = stop_active_recording_internal(dirs.inner(), state.inner(), None, Some(app));
+                        let _ = stop_active_recording_internal(
+                            dirs.inner(),
+                            state.inner(),
+                            None,
+                            Some(app),
+                        );
                     }
                     "settings" => {
                         let _ = open_settings_window_internal(app);
@@ -2259,7 +2431,12 @@ fn main() {
                         let _ = app.emit("tray:stop", ());
                         let state = app.state::<AppState>();
                         let dirs = app.state::<AppDirs>();
-                        let _ = stop_active_recording_internal(dirs.inner(), state.inner(), None, Some(app));
+                        let _ = stop_active_recording_internal(
+                            dirs.inner(),
+                            state.inner(),
+                            None,
+                            Some(app),
+                        );
                     }
                 })
                 .build(),
@@ -2270,6 +2447,7 @@ fn main() {
             save_public_settings,
             list_audio_input_devices,
             detect_system_source_device,
+            list_text_editor_apps,
             open_settings_window,
             open_tray_window,
             open_session_folder,

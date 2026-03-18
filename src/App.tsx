@@ -15,8 +15,21 @@ type PublicSettings = {
   opus_bitrate_kbps: number;
   mic_device_name: string;
   system_device_name: string;
+  artifact_opener_app: string;
   auto_run_pipeline_on_stop: boolean;
   api_call_logging_enabled: boolean;
+};
+
+type TextEditorApp = {
+  id: string;
+  name: string;
+  icon_fallback: string;
+  icon_data_url: string | null;
+};
+
+type TextEditorAppsResponse = {
+  apps: TextEditorApp[];
+  default_app_id: string | null;
 };
 
 type StartResponse = {
@@ -149,6 +162,8 @@ export function App() {
   const [sessionDetails, setSessionDetails] = useState<Record<string, SessionMetaView>>({});
   const [savedSessionDetails, setSavedSessionDetails] = useState<Record<string, SessionMetaView>>({});
   const [audioDevices, setAudioDevices] = useState<string[]>([]);
+  const [textEditorApps, setTextEditorApps] = useState<TextEditorApp[]>([]);
+  const [isOpenerDropdownOpen, setIsOpenerDropdownOpen] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [textPendingBySession, setTextPendingBySession] = useState<Record<string, boolean>>({});
   const [summaryPendingBySession, setSummaryPendingBySession] = useState<Record<string, boolean>>({});
@@ -164,6 +179,7 @@ export function App() {
   const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const trayTopicAutosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const trayTopicSavedSignatureRef = useRef<string>("");
+  const openerDropdownRef = useRef<HTMLDivElement | null>(null);
 
   const settingsErrors = useMemo(() => validateSettings(settings), [settings]);
   const canSaveSettings = Boolean(settings) && settingsErrors.length === 0;
@@ -185,6 +201,17 @@ export function App() {
       document.documentElement.classList.remove("tray-window-html");
     };
   }, []);
+
+  useEffect(() => {
+    const onDocumentMouseDown = (event: MouseEvent) => {
+      if (!isOpenerDropdownOpen) return;
+      if (!openerDropdownRef.current) return;
+      if (openerDropdownRef.current.contains(event.target as Node)) return;
+      setIsOpenerDropdownOpen(false);
+    };
+    document.addEventListener("mousedown", onDocumentMouseDown);
+    return () => document.removeEventListener("mousedown", onDocumentMouseDown);
+  }, [isOpenerDropdownOpen]);
 
   useEffect(() => {
     if (isTrayWindow) return;
@@ -259,9 +286,18 @@ export function App() {
   }, []);
 
   async function loadSettings() {
-    const data = await invoke<PublicSettings>("get_settings");
-    setSettings(data);
-    setSavedSettingsSnapshot(data);
+    const [data, availableEditorApps] = await Promise.all([
+      invoke<PublicSettings>("get_settings"),
+      invoke<TextEditorAppsResponse>("list_text_editor_apps").catch(() => ({ apps: [], default_app_id: null })),
+    ]);
+    const normalized: PublicSettings = {
+      ...data,
+      artifact_opener_app:
+        (data as Partial<PublicSettings>).artifact_opener_app?.trim() || availableEditorApps.default_app_id || "",
+    };
+    setTextEditorApps(availableEditorApps.apps ?? []);
+    setSettings(normalized);
+    setSavedSettingsSnapshot(normalized);
   }
 
   async function loadAudioDevices() {
@@ -694,6 +730,7 @@ export function App() {
   function renderSettingsFields() {
     if (!settings) return null;
     const snapshot = savedSettingsSnapshot;
+    const selectedOpenerApp = textEditorApps.find((app) => app.id === settings.artifact_opener_app) ?? null;
     const isDirty = (field: keyof PublicSettings) => Boolean(snapshot && settings[field] !== snapshot[field]);
     const dirtyByTab: Record<SettingsTab, boolean> = {
       audiototext:
@@ -707,6 +744,7 @@ export function App() {
         openaiKey.trim().length > 0,
       generals:
         isDirty("recording_root") ||
+        isDirty("artifact_opener_app") ||
         isDirty("auto_run_pipeline_on_stop") ||
         isDirty("api_call_logging_enabled"),
       audio: isDirty("opus_bitrate_kbps") || isDirty("mic_device_name") || isDirty("system_device_name"),
@@ -842,6 +880,76 @@ export function App() {
                   onChange={(e) => setSettings({ ...settings, recording_root: e.target.value })}
                 />
               </label>
+              <div className="field">
+                <span>Artifact opener app (optional)</span>
+                <div className="opener-dropdown" ref={openerDropdownRef}>
+                  <button
+                    type="button"
+                    className="opener-dropdown-trigger"
+                    aria-label="Artifact opener app (optional)"
+                    aria-haspopup="listbox"
+                    aria-expanded={isOpenerDropdownOpen}
+                    onClick={() => setIsOpenerDropdownOpen((prev) => !prev)}
+                  >
+                    {selectedOpenerApp ? (
+                      <>
+                        {selectedOpenerApp.icon_data_url ? (
+                          <img
+                            className="opener-app-icon"
+                            src={selectedOpenerApp.icon_data_url}
+                            alt=""
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <span className="opener-app-fallback-icon" aria-hidden="true">
+                            {selectedOpenerApp.icon_fallback}
+                          </span>
+                        )}
+                        <span>{selectedOpenerApp.name}</span>
+                      </>
+                    ) : (
+                      <span>System default</span>
+                    )}
+                  </button>
+
+                  {isOpenerDropdownOpen && (
+                    <div className="opener-dropdown-menu" role="listbox" aria-label="Artifact opener app options">
+                      <button
+                        type="button"
+                        className={`opener-dropdown-option${settings.artifact_opener_app === "" ? " is-active" : ""}`}
+                        onClick={() => {
+                          setSettings({ ...settings, artifact_opener_app: "" });
+                          setIsOpenerDropdownOpen(false);
+                        }}
+                      >
+                        <span>System default</span>
+                      </button>
+                      {textEditorApps.map((app) => (
+                        <button
+                          key={app.id}
+                          type="button"
+                          className={`opener-dropdown-option${
+                            settings.artifact_opener_app === app.id ? " is-active" : ""
+                          }`}
+                          onClick={() => {
+                            setSettings({ ...settings, artifact_opener_app: app.id });
+                            setIsOpenerDropdownOpen(false);
+                          }}
+                        >
+                          {app.icon_data_url ? (
+                            <img className="opener-app-icon" src={app.icon_data_url} alt="" aria-hidden="true" />
+                          ) : (
+                            <span className="opener-app-fallback-icon" aria-hidden="true">
+                              {app.icon_fallback}
+                            </span>
+                          )}
+                          <span>{app.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
               <label className="field">
                 <span>Auto-run pipeline on Stop</span>
                 <input

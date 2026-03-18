@@ -4,7 +4,10 @@ use serde_json::json;
 use std::path::Path;
 
 fn format_diarize_segments(body: &serde_json::Value) -> Option<String> {
-    let task = body.get("task").and_then(|v| v.as_str()).unwrap_or_default();
+    let task = body
+        .get("task")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     if task != "diarize" {
         return None;
     }
@@ -60,7 +63,10 @@ pub async fn transcribe_audio(
         .text("task", settings.transcription_task.trim().to_string())
         .text(
             "diarization_setting",
-            settings.transcription_diarization_setting.trim().to_string(),
+            settings
+                .transcription_diarization_setting
+                .trim()
+                .to_string(),
         )
         .text("model", "whisper-1")
         .text("response_format", "json");
@@ -98,7 +104,11 @@ pub async fn transcribe_audio(
     if let Some(formatted) = format_diarize_segments(&body) {
         return Ok(formatted);
     }
-    Ok(body.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string())
+    Ok(body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
 }
 
 pub async fn summarize_text(
@@ -222,7 +232,8 @@ mod tests {
             req_str
         });
 
-        let tmp_path = std::env::temp_dir().join(format!("bigecho_pipeline_{}.opus", uuid::Uuid::new_v4()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("bigecho_pipeline_{}.opus", uuid::Uuid::new_v4()));
         std::fs::write(&tmp_path, b"fake-opus").expect("write temp opus");
         let settings = PublicSettings {
             recording_root: "./recordings".to_string(),
@@ -235,6 +246,7 @@ mod tests {
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
@@ -283,7 +295,8 @@ mod tests {
             stream.write_all(response.as_bytes()).expect("write");
         });
 
-        let tmp_path = std::env::temp_dir().join(format!("bigecho_pipeline_{}.opus", uuid::Uuid::new_v4()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("bigecho_pipeline_{}.opus", uuid::Uuid::new_v4()));
         std::fs::write(&tmp_path, b"fake-opus").expect("write temp opus");
         let settings = PublicSettings {
             recording_root: "./recordings".to_string(),
@@ -296,6 +309,7 @@ mod tests {
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
@@ -338,13 +352,18 @@ mod tests {
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
 
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let out = rt
-            .block_on(summarize_text(&settings, "openai-test-key", "meeting transcript"))
+            .block_on(summarize_text(
+                &settings,
+                "openai-test-key",
+                "meeting transcript",
+            ))
             .expect("summary ok");
         assert_eq!(out, "ok summary");
 
