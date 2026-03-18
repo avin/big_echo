@@ -736,6 +736,7 @@ select {
   border: 1px solid #d4d4d8;
   border-radius: 10px;
   background: #f7f7f8;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.17);
   padding: 10px;
   display: grid;
   gap: 6px;

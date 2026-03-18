@@ -8,6 +8,11 @@ import {
 import { getErrorMessage } from "../../lib/appUtils";
 import { tauriInvoke } from "../../lib/tauri";
 
+type SessionArtifactSearchHit = {
+  transcript_match: boolean;
+  summary_match: boolean;
+};
+
 type UseSessionsOptions = {
   setStatus: (status: string) => void;
   lastSessionId: string | null;
@@ -29,12 +34,16 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
   const [sessionDetails, setSessionDetails] = useState<Record<string, SessionMetaView>>({});
   const [savedSessionDetails, setSavedSessionDetails] = useState<Record<string, SessionMetaView>>({});
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [sessionArtifactSearchHits, setSessionArtifactSearchHits] = useState<Record<string, SessionArtifactSearchHit>>(
+    {}
+  );
   const [textPendingBySession, setTextPendingBySession] = useState<Record<string, boolean>>({});
   const [summaryPendingBySession, setSummaryPendingBySession] = useState<Record<string, boolean>>({});
   const [pipelineStateBySession, setPipelineStateBySession] = useState<Record<string, PipelineUiState>>({});
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deletePendingSessionId, setDeletePendingSessionId] = useState<string | null>(null);
   const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const artifactSearchRequestIdRef = useRef(0);
 
   async function loadSessions() {
     const data = await tauriInvoke<SessionListItem[]>("list_sessions");
@@ -169,6 +178,30 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
   }
 
   useEffect(() => {
+    const query = sessionSearchQuery.trim();
+    if (!query || sessions.length === 0) {
+      setSessionArtifactSearchHits({});
+      return;
+    }
+
+    const requestId = artifactSearchRequestIdRef.current + 1;
+    artifactSearchRequestIdRef.current = requestId;
+    const timer = setTimeout(() => {
+      void tauriInvoke<Record<string, SessionArtifactSearchHit>>("search_session_artifacts", { query })
+        .then((hits) => {
+          if (artifactSearchRequestIdRef.current !== requestId) return;
+          setSessionArtifactSearchHits(hits ?? {});
+        })
+        .catch(() => {
+          if (artifactSearchRequestIdRef.current !== requestId) return;
+          setSessionArtifactSearchHits({});
+        });
+    }, 180);
+
+    return () => clearTimeout(timer);
+  }, [sessionSearchQuery, sessions]);
+
+  useEffect(() => {
     const ids = Object.keys(sessionDetails);
     for (const sessionId of ids) {
       const current = sessionDetails[sessionId];
@@ -217,6 +250,8 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
       const pathValue = item.session_dir.toLowerCase();
       const statusValue = item.status.toLowerCase();
       const dateValue = item.display_date_ru.toLowerCase();
+      const artifactHit = sessionArtifactSearchHits[item.session_id];
+      const artifactTextMatch = Boolean(artifactHit?.transcript_match || artifactHit?.summary_match);
       if (!query) return true;
       return (
         sourceValue.includes(query) ||
@@ -225,10 +260,11 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
         participantsValue.includes(query) ||
         pathValue.includes(query) ||
         statusValue.includes(query) ||
-        dateValue.includes(query)
+        dateValue.includes(query) ||
+        artifactTextMatch
       );
     });
-  }, [sessionDetails, sessionSearchQuery, sessions]);
+  }, [sessionArtifactSearchHits, sessionDetails, sessionSearchQuery, sessions]);
 
   return {
     confirmDeleteSession,
@@ -242,6 +278,7 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
     openSessionArtifact,
     pipelineStateBySession,
     requestDeleteSession,
+    sessionArtifactSearchHits,
     sessionDetails,
     sessionSearchQuery,
     sessions,

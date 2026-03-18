@@ -47,6 +47,7 @@ export function App() {
   const [status, setStatus] = useState("idle");
   const [isOpenerDropdownOpen, setIsOpenerDropdownOpen] = useState(false);
   const openerDropdownRef = useRef<HTMLDivElement | null>(null);
+  const sessionSearchInputRef = useRef<HTMLInputElement | null>(null);
   const {
     audioDevices,
     autoDetectSystemSource,
@@ -82,6 +83,7 @@ export function App() {
     openSessionFolder,
     pipelineStateBySession,
     requestDeleteSession,
+    sessionArtifactSearchHits,
     sessionDetails,
     sessionSearchQuery,
     sessions,
@@ -131,6 +133,19 @@ export function App() {
     document.addEventListener("mousedown", onDocumentMouseDown);
     return () => document.removeEventListener("mousedown", onDocumentMouseDown);
   }, [isOpenerDropdownOpen]);
+
+  useEffect(() => {
+    if (isTrayWindow || isSettingsWindow) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "f") return;
+      if (!event.metaKey && !event.ctrlKey) return;
+      event.preventDefault();
+      sessionSearchInputRef.current?.focus();
+      sessionSearchInputRef.current?.select();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   function renderSettingsFields() {
     if (!settings) return null;
@@ -582,7 +597,11 @@ export function App() {
         <div className="search-grid">
           <label className="field">
             Search sessions
-            <input value={sessionSearchQuery} onChange={(e) => setSessionSearchQuery(e.target.value)} />
+            <input
+              ref={sessionSearchInputRef}
+              value={sessionSearchQuery}
+              onChange={(e) => setSessionSearchQuery(e.target.value)}
+            />
           </label>
         </div>
         <div className="button-row">
@@ -610,6 +629,9 @@ export function App() {
             const participantsMatch = query !== "" && participantsText.toLowerCase().includes(query);
             const pathMatch = query !== "" && item.session_dir.toLowerCase().includes(query);
             const statusMatch = query !== "" && item.status.toLowerCase().includes(query);
+            const artifactHit = sessionArtifactSearchHits[item.session_id];
+            const transcriptMatch = query !== "" && Boolean(artifactHit?.transcript_match);
+            const summaryMatch = query !== "" && Boolean(artifactHit?.summary_match);
             return (
               <article key={item.session_id} className="session-card">
                 <div className="session-header">
@@ -630,7 +652,7 @@ export function App() {
                       {item.has_transcript_text && (
                         <button
                           type="button"
-                          className="session-label session-label-action session-label-text"
+                          className={`session-label session-label-action session-label-text${transcriptMatch ? " match-hit" : ""}`}
                           onClick={() => void openSessionArtifact(item.session_id, "transcript")}
                         >
                           текст
@@ -639,7 +661,7 @@ export function App() {
                       {item.has_summary_text && (
                         <button
                           type="button"
-                          className="session-label session-label-action session-label-summary"
+                          className={`session-label session-label-action session-label-summary${summaryMatch ? " match-hit" : ""}`}
                           onClick={() => void openSessionArtifact(item.session_id, "summary")}
                         >
                           саммари

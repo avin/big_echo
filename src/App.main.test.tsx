@@ -357,6 +357,122 @@ describe("App main window", () => {
     expect(screen.getByText("/tmp/project-alpha/s4")).toHaveClass("match-hit");
   });
 
+  it("searches sessions by transcript/summary text via global session search", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "get_ui_sync_state") {
+        return { source: "slack", topic: "", is_recording: false, active_session_id: null };
+      }
+      if (cmd === "set_ui_sync_state") {
+        return "updated";
+      }
+      if (cmd === "get_settings") {
+        return {
+          recording_root: "./recordings",
+          artifact_open_app: "",
+          transcription_url: "",
+          transcription_task: "transcribe",
+          transcription_diarization_setting: "general",
+          summary_url: "",
+          summary_prompt: "",
+          openai_model: "gpt-4.1-mini",
+          opus_bitrate_kbps: 24,
+          mic_device_name: "",
+          system_device_name: "",
+          auto_run_pipeline_on_stop: false,
+          api_call_logging_enabled: false,
+        };
+      }
+      if (cmd === "list_sessions") {
+        return [
+          {
+            session_id: "s8",
+            status: "done",
+            primary_tag: "zoom",
+            topic: "Product demo",
+            display_date_ru: "11.03.2026",
+            started_at_iso: "2026-03-11T10:00:00+03:00",
+            session_dir: "/tmp/s8",
+            audio_duration_hms: "00:08:10",
+            has_transcript_text: true,
+            has_summary_text: true,
+          },
+          {
+            session_id: "s9",
+            status: "done",
+            primary_tag: "slack",
+            topic: "Standup",
+            display_date_ru: "11.03.2026",
+            started_at_iso: "2026-03-11T11:00:00+03:00",
+            session_dir: "/tmp/s9",
+            audio_duration_hms: "00:09:05",
+            has_transcript_text: true,
+            has_summary_text: false,
+          },
+        ];
+      }
+      if (cmd === "get_session_meta") {
+        if ((args as { sessionId?: string } | undefined)?.sessionId === "s9") {
+          return {
+            session_id: "s9",
+            source: "slack",
+            custom_tag: "",
+            topic: "Standup",
+            participants: [],
+          };
+        }
+        return {
+          session_id: "s8",
+          source: "zoom",
+          custom_tag: "",
+          topic: "Product demo",
+          participants: [],
+        };
+      }
+      if (cmd === "search_session_artifacts") {
+        if ((args as { query?: string } | undefined)?.query === "acme renewal risk") {
+          return {
+            s8: { transcript_match: true, summary_match: true },
+          };
+        }
+        return {};
+      }
+      return null;
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Refresh sessions" }));
+    await waitFor(() => {
+      expect(screen.getByDisplayValue("Product demo")).toBeInTheDocument();
+      expect(screen.getByDisplayValue("Standup")).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByLabelText("Search sessions"), "acme renewal risk");
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("search_session_artifacts", { query: "acme renewal risk" });
+      expect(screen.getByDisplayValue("Product demo")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("Standup")).not.toBeInTheDocument();
+    });
+  });
+
+  it("focuses Search sessions on Cmd/Ctrl+F", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const searchInput = screen.getByLabelText("Search sessions");
+    expect(searchInput).not.toHaveFocus();
+
+    await user.keyboard("{Meta>}f{/Meta}");
+    expect(searchInput).toHaveFocus();
+
+    searchInput.blur();
+    expect(searchInput).not.toHaveFocus();
+
+    await user.keyboard("{Control>}f{/Control}");
+    expect(searchInput).toHaveFocus();
+  });
+
   it("opens session folder from session row link", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
