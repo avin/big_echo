@@ -3,3 +3,4 @@ src/.DS_Store
 .worktrees/
 node_modules
 src-tauri/target
+dist
