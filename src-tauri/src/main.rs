@@ -7,6 +7,7 @@ mod pipeline;
 mod services;
 mod settings;
 mod storage;
+mod text_editors;
 
 use app_state::{AppDirs, AppState};
 #[cfg(test)]
