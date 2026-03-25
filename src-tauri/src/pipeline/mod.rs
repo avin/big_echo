@@ -52,10 +52,11 @@ pub async fn transcribe_audio(
         .and_then(|s| s.to_str())
         .unwrap_or("audio.opus")
         .to_string();
+    let mime = crate::audio::file_writer::mime_type_for_audio_path(audio_path);
 
     let part = reqwest::multipart::Part::bytes(data)
         .file_name(file_name)
-        .mime_str("audio/opus")
+        .mime_str(mime)
         .map_err(|e| e.to_string())?;
 
     let form = reqwest::multipart::Form::new()
@@ -244,6 +245,7 @@ mod tests {
             summary_url: "https://example.com/summary".to_string(),
             summary_prompt: String::new(),
             openai_model: "gpt-4.1-mini".to_string(),
+            audio_format: "opus".to_string(),
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
@@ -308,6 +310,7 @@ mod tests {
             summary_url: "https://example.com/summary".to_string(),
             summary_prompt: String::new(),
             openai_model: "gpt-4.1-mini".to_string(),
+            audio_format: "opus".to_string(),
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
@@ -352,6 +355,7 @@ mod tests {
             summary_url: format!("http://{addr}/summary"),
             summary_prompt: "Сделай саммари: решения, риски, action items".to_string(),
             openai_model: "gpt-4.1-mini".to_string(),
+            audio_format: "opus".to_string(),
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),

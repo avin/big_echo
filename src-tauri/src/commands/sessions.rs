@@ -103,13 +103,20 @@ pub struct SessionArtifactSearchHit {
     pub summary_match: bool,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SessionArtifactReadResponse {
+    pub path: String,
+    pub text: String,
+}
+
 fn file_contains_query(path: &Path, query_lower: &str) -> bool {
     if query_lower.is_empty() || !path.exists() {
         return false;
     }
+    let normalized_query = query_lower.to_lowercase();
     fs::read_to_string(path)
         .ok()
-        .map(|content| content.to_lowercase().contains(query_lower))
+        .map(|content| content.to_lowercase().contains(&normalized_query))
         .unwrap_or(false)
 }
 
@@ -157,6 +164,30 @@ pub fn open_session_artifact(
     let settings = get_settings_from_dirs(dirs.inner())?;
     open_path_in_file_manager(&artifact_path, Some(&settings.artifact_open_app))?;
     Ok("opened".to_string())
+}
+
+#[tauri::command]
+pub fn read_session_artifact(
+    dirs: tauri::State<AppDirs>,
+    session_id: String,
+    artifact_kind: String,
+) -> Result<SessionArtifactReadResponse, String> {
+    let meta_path = get_meta_path(&dirs.app_data_dir, &session_id)?
+        .ok_or_else(|| "Session not found".to_string())?;
+    let meta = load_meta(&meta_path)?;
+    let session_dir = meta_path
+        .parent()
+        .ok_or_else(|| "Invalid session directory".to_string())?;
+    let artifact_path = resolve_artifact_path(session_dir, &meta, artifact_kind.trim())?;
+    if !artifact_path.exists() {
+        return Err("Artifact file not found".to_string());
+    }
+
+    let text = fs::read_to_string(&artifact_path).map_err(|e| e.to_string())?;
+    Ok(SessionArtifactReadResponse {
+        path: artifact_path.to_string_lossy().to_string(),
+        text,
+    })
 }
 
 #[tauri::command]

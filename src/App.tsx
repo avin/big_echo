@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  audioFormatOptions,
   fixedSources,
   diarizationSettingOptions,
   PublicSettings,
@@ -37,6 +38,23 @@ function localIconForEditor(editorName: string): string | null {
   return null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderHighlightedText(text: string, query: string) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return text;
+
+  const matcher = new RegExp(`(${escapeRegExp(normalizedQuery)})`, "gi");
+  return text.split(matcher).map((part, index) => {
+    if (part.toLowerCase() === normalizedQuery.toLowerCase()) {
+      return <mark key={`m-${index}`}>{part}</mark>;
+    }
+    return <span key={`t-${index}`}>{part}</span>;
+  });
+}
+
 export function App() {
   const [topic, setTopic] = useState("");
   const [participants, setParticipants] = useState("");
@@ -48,6 +66,7 @@ export function App() {
   const [isOpenerDropdownOpen, setIsOpenerDropdownOpen] = useState(false);
   const openerDropdownRef = useRef<HTMLDivElement | null>(null);
   const sessionSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const artifactPreviewBodyRef = useRef<HTMLPreElement | null>(null);
   const {
     audioDevices,
     autoDetectSystemSource,
@@ -72,6 +91,8 @@ export function App() {
     textEditorApps,
   } = useSettingsForm({ isTrayWindow, setStatus });
   const {
+    artifactPreview,
+    closeArtifactPreview,
     confirmDeleteSession,
     deletePendingSessionId,
     deleteTarget,
@@ -147,8 +168,16 @@ export function App() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    if (!artifactPreview) return;
+    const firstMatch = artifactPreviewBodyRef.current?.querySelector("mark");
+    if (!(firstMatch instanceof HTMLElement) || typeof firstMatch.scrollIntoView !== "function") return;
+    firstMatch.scrollIntoView({ block: "center" });
+  }, [artifactPreview]);
+
   function renderSettingsFields() {
     if (!settings) return null;
+    const isOpusFormat = settings.audio_format === "opus";
     const openerOptions = textEditorApps.length > 0 ? textEditorApps : openerUiFallback;
     const selectedOpenerApp = openerOptions.find((app) => app.id === settings.artifact_open_app) ?? null;
     const snapshot = savedSettingsSnapshot;
@@ -168,7 +197,11 @@ export function App() {
         isDirty("artifact_open_app") ||
         isDirty("auto_run_pipeline_on_stop") ||
         isDirty("api_call_logging_enabled"),
-      audio: isDirty("opus_bitrate_kbps") || isDirty("mic_device_name") || isDirty("system_device_name"),
+      audio:
+        isDirty("audio_format") ||
+        isDirty("opus_bitrate_kbps") ||
+        isDirty("mic_device_name") ||
+        isDirty("system_device_name"),
     };
     const tabButtons: Array<{ id: SettingsTab; label: string }> = [
       { id: "generals", label: "Generals" },
@@ -396,10 +429,24 @@ export function App() {
           {settingsTab === "audio" && (
             <div className="settings-tab-grid">
               <label className="field">
+                Audio format
+                <select
+                  value={settings.audio_format}
+                  onChange={(e) => setSettings({ ...settings, audio_format: e.target.value })}
+                >
+                  {audioFormatOptions.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
                 Opus bitrate kbps
                 <input
                   type="number"
                   value={settings.opus_bitrate_kbps}
+                  disabled={!isOpusFormat}
                   onChange={(e) => setSettings({ ...settings, opus_bitrate_kbps: Number(e.target.value) || 24 })}
                 />
               </label>
@@ -818,6 +865,24 @@ export function App() {
                   disabled={deletePendingSessionId !== null}
                 >
                   {deletePendingSessionId !== null ? "Удаление..." : "Удалить"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {artifactPreview && (
+          <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Просмотр артефакта">
+            <div className="confirm-card artifact-preview-card">
+              <div className="session-title-line">
+                <strong>{artifactPreview.artifactKind === "transcript" ? "Текст" : "Саммари"}</strong>
+              </div>
+              <div className="session-path">{artifactPreview.path}</div>
+              <pre ref={artifactPreviewBodyRef} className="artifact-preview-text">
+                {renderHighlightedText(artifactPreview.text, artifactPreview.query)}
+              </pre>
+              <div className="button-row">
+                <button className="secondary-button" type="button" onClick={closeArtifactPreview}>
+                  Закрыть
                 </button>
               </div>
             </div>

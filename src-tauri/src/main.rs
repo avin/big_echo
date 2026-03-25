@@ -20,7 +20,8 @@ use commands::recording::{
 };
 use commands::sessions::{
     delete_session, get_live_input_levels, get_session_meta, get_ui_sync_state, list_sessions,
-    open_session_artifact, open_session_folder, search_session_artifacts, set_ui_sync_state,
+    open_session_artifact, open_session_folder, read_session_artifact, search_session_artifacts,
+    set_ui_sync_state,
     update_session_details,
 };
 use commands::settings::{
@@ -531,6 +532,7 @@ pub(crate) fn stop_active_recording_internal(
     let rel_dir = build_session_relative_dir(&meta.primary_tag, started_at);
     let abs_dir = root_recordings_dir(&dirs.app_data_dir, &settings)?.join(&rel_dir);
     let data_dir = dirs.app_data_dir.clone();
+    let audio_output_path = abs_dir.join(&meta.artifacts.audio_file);
 
     let mut cap_guard = state
         .active_capture
@@ -539,12 +541,10 @@ pub(crate) fn stop_active_recording_internal(
     let mut finalize_error: Option<String> = None;
     if let Some(capture) = cap_guard.take() {
         match capture.stop_and_take_artifacts() {
-            Ok(artifacts) => match audio::opus_writer::write_mixed_raw_i16_to_opus(
-                &abs_dir.join("audio.opus"),
-                &artifacts.mic_path,
-                artifacts.mic_rate,
-                artifacts.system_path.as_ref(),
-                artifacts.system_rate,
+            Ok(artifacts) => match audio::file_writer::write_capture_to_audio_file(
+                &audio_output_path,
+                &settings.audio_format,
+                &artifacts,
                 settings.opus_bitrate_kbps,
             ) {
                 Ok(()) => audio::capture::cleanup_artifacts(&artifacts),
@@ -564,10 +564,9 @@ pub(crate) fn stop_active_recording_internal(
                 finalize_error = Some(format!("Audio capture finalization failed: {err}"));
             }
         }
-    } else if let Err(err) = audio::opus_writer::write_pcm_opus(
-        &abs_dir.join("audio.opus"),
-        48_000,
-        &[],
+    } else if let Err(err) = audio::file_writer::write_silence_audio_file(
+        &audio_output_path,
+        &settings.audio_format,
         settings.opus_bitrate_kbps,
     ) {
         finalize_error = Some(format!("Audio encoding failed: {err}"));
@@ -907,6 +906,7 @@ mod ipc_runtime_tests {
                 get_live_input_levels,
                 open_session_folder,
                 open_session_artifact,
+                read_session_artifact,
                 delete_session,
                 get_session_meta,
                 update_session_details,
@@ -998,9 +998,11 @@ mod ipc_runtime_tests {
             summary_url: format!("{base_url}/summary"),
             summary_prompt: "Есть стенограмма встречи. Подготовь краткое саммари.".to_string(),
             openai_model: "gpt-4.1-mini".to_string(),
+            audio_format: "opus".to_string(),
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
@@ -1015,11 +1017,11 @@ mod ipc_runtime_tests {
             "Weekly sync".to_string(),
             vec!["Alice".to_string()],
         );
-        meta.artifacts.audio_file = "audio.opus".to_string();
+        meta.artifacts.audio_file = crate::audio::file_writer::audio_file_name(&settings.audio_format);
         meta.artifacts.transcript_file = "transcript.txt".to_string();
         meta.artifacts.summary_file = "summary.txt".to_string();
         save_meta(&meta_path, &meta).expect("save meta");
-        std::fs::write(session_dir.join("audio.opus"), b"OggS").expect("write audio fixture");
+        std::fs::write(session_dir.join(&meta.artifacts.audio_file), b"OggS").expect("write audio fixture");
         upsert_session(app_data_dir, &meta, &session_dir, &meta_path).expect("upsert session");
     }
 
@@ -1040,9 +1042,11 @@ mod ipc_runtime_tests {
             summary_url: format!("{base_url}/summary"),
             summary_prompt: "Есть стенограмма встречи. Подготовь краткое саммари.".to_string(),
             openai_model: "gpt-4.1-mini".to_string(),
+            audio_format: "opus".to_string(),
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
+            artifact_opener_app: String::new(),
             auto_run_pipeline_on_stop: false,
             api_call_logging_enabled: false,
         };
@@ -1770,6 +1774,7 @@ fn main() {
             open_tray_window,
             open_session_folder,
             open_session_artifact,
+            read_session_artifact,
             delete_session,
             list_sessions,
             search_session_artifacts,

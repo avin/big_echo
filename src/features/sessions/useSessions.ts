@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DeleteTarget,
   PipelineUiState,
+  SessionArtifactPreview,
   SessionListItem,
   SessionMetaView,
 } from "../../appTypes";
@@ -11,6 +12,11 @@ import { tauriInvoke } from "../../lib/tauri";
 type SessionArtifactSearchHit = {
   transcript_match: boolean;
   summary_match: boolean;
+};
+
+type SessionArtifactReadResponse = {
+  path: string;
+  text: string;
 };
 
 type UseSessionsOptions = {
@@ -42,6 +48,7 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
   const [pipelineStateBySession, setPipelineStateBySession] = useState<Record<string, PipelineUiState>>({});
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deletePendingSessionId, setDeletePendingSessionId] = useState<string | null>(null);
+  const [artifactPreview, setArtifactPreview] = useState<SessionArtifactPreview | null>(null);
   const autosaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const artifactSearchRequestIdRef = useRef(0);
 
@@ -122,6 +129,33 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
   }
 
   async function openSessionArtifact(sessionId: string, artifactKind: "transcript" | "summary") {
+    const query = sessionSearchQuery.trim();
+    const artifactHit = sessionArtifactSearchHits[sessionId];
+    const hasArtifactMatch =
+      query !== "" &&
+      Boolean(
+        artifactKind === "transcript" ? artifactHit?.transcript_match : artifactHit?.summary_match
+      );
+
+    if (hasArtifactMatch) {
+      try {
+        const preview = await tauriInvoke<SessionArtifactReadResponse>("read_session_artifact", {
+          sessionId,
+          artifactKind,
+        });
+        setArtifactPreview({
+          sessionId,
+          artifactKind,
+          path: preview.path,
+          text: preview.text,
+          query,
+        });
+      } catch (err) {
+        setStatus(`error: ${getErrorMessage(err)}`);
+      }
+      return;
+    }
+
     try {
       await tauriInvoke<string>("open_session_artifact", { sessionId, artifactKind });
     } catch (err) {
@@ -267,6 +301,8 @@ export function useSessions({ setStatus, lastSessionId, setLastSessionId }: UseS
   }, [sessionArtifactSearchHits, sessionDetails, sessionSearchQuery, sessions]);
 
   return {
+    artifactPreview,
+    closeArtifactPreview: () => setArtifactPreview(null),
     confirmDeleteSession,
     deletePendingSessionId,
     deleteTarget,

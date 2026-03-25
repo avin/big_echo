@@ -885,6 +885,31 @@ select {
   margin: 0;
 }
 
+.artifact-preview-card {
+  width: min(820px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+}
+
+.artifact-preview-text {
+  margin: 0;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #d9dde4;
+  background: #ffffff;
+  color: #232934;
+  font: 13px/1.55 "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: min(58vh, 520px);
+}
+
+.artifact-preview-text mark {
+  background: #ffe08a;
+  color: inherit;
+  border-radius: 4px;
+  padding: 0 1px;
+}
+
 .link-button {
   border: 0;
   background: transparent;

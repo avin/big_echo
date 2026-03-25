@@ -7,6 +7,7 @@ export type PublicSettings = {
   summary_url: string;
   summary_prompt: string;
   openai_model: string;
+  audio_format: string;
   opus_bitrate_kbps: number;
   mic_device_name: string;
   system_device_name: string;
@@ -66,6 +67,15 @@ export type TextEditorAppsResponse = {
   default_app_id: string | null;
 };
 
+export type SessionArtifactPreview = {
+  sessionId: string;
+  artifactKind: "transcript" | "summary";
+  path: string;
+  text: string;
+  query: string;
+};
+
 export const fixedSources = ["slack", "zoom", "telemost", "telegram", "browser", "facetime"];
 export const transcriptionTaskOptions = ["transcribe", "diarize"];
 export const diarizationSettingOptions = ["general", "meeting", "telephonic"];
+export const audioFormatOptions = ["opus", "mp3", "m4a", "ogg", "wav"];
