@@ -14,6 +14,7 @@ const { invokeMock } = vi.hoisted(() => ({
         summary_url: "",
         summary_prompt: "",
         openai_model: "gpt-4.1-mini",
+        audio_format: "opus",
         opus_bitrate_kbps: 24,
         mic_device_name: "",
         system_device_name: "",
@@ -184,6 +185,27 @@ describe("App settings window", () => {
         payload: expect.objectContaining({
           auto_run_pipeline_on_stop: true,
           api_call_logging_enabled: true,
+        }),
+      });
+    });
+  });
+
+  it("saves selected audio format from audio tab", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("get_settings");
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Audio" }));
+    await user.selectOptions(screen.getByLabelText("Audio format"), "mp3");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("save_public_settings", {
+        payload: expect.objectContaining({
+          audio_format: "mp3",
         }),
       });
     });

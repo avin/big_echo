@@ -30,6 +30,7 @@ const { listeners, invokeMock } = vi.hoisted(() => ({
         summary_url: "",
         summary_prompt: "",
         openai_model: "gpt-4.1-mini",
+        audio_format: "opus",
         opus_bitrate_kbps: 24,
         mic_device_name: "",
         system_device_name: "",

@@ -30,6 +30,7 @@ const { listeners, invokeMock } = vi.hoisted(() => ({
         summary_url: "",
         summary_prompt: "",
         openai_model: "gpt-4.1-mini",
+        audio_format: "opus",
         opus_bitrate_kbps: 24,
         mic_device_name: "",
         system_device_name: "",
@@ -286,6 +287,7 @@ describe("App main window", () => {
           summary_url: "",
           summary_prompt: "",
           openai_model: "gpt-4.1-mini",
+          audio_format: "opus",
           opus_bitrate_kbps: 24,
           mic_device_name: "",
           system_device_name: "",
@@ -375,6 +377,7 @@ describe("App main window", () => {
           summary_url: "",
           summary_prompt: "",
           openai_model: "gpt-4.1-mini",
+          audio_format: "opus",
           opus_bitrate_kbps: 24,
           mic_device_name: "",
           system_device_name: "",
@@ -455,6 +458,101 @@ describe("App main window", () => {
     });
   });
 
+  it("opens matched artifact in inline viewer and highlights the search query", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "get_ui_sync_state") {
+        return { source: "slack", topic: "", is_recording: false, active_session_id: null };
+      }
+      if (cmd === "set_ui_sync_state") {
+        return "updated";
+      }
+      if (cmd === "get_settings") {
+        return {
+          recording_root: "./recordings",
+          artifact_open_app: "",
+          transcription_url: "",
+          transcription_task: "transcribe",
+          transcription_diarization_setting: "general",
+          summary_url: "",
+          summary_prompt: "",
+          openai_model: "gpt-4.1-mini",
+          audio_format: "opus",
+          opus_bitrate_kbps: 24,
+          mic_device_name: "",
+          system_device_name: "",
+          auto_run_pipeline_on_stop: false,
+          api_call_logging_enabled: false,
+        };
+      }
+      if (cmd === "list_sessions") {
+        return [
+          {
+            session_id: "s10",
+            status: "done",
+            primary_tag: "zoom",
+            topic: "Renewal risks",
+            display_date_ru: "11.03.2026",
+            started_at_iso: "2026-03-11T12:00:00+03:00",
+            session_dir: "/tmp/s10",
+            audio_duration_hms: "00:07:42",
+            has_transcript_text: true,
+            has_summary_text: true,
+          },
+        ];
+      }
+      if (cmd === "get_session_meta") {
+        return {
+          session_id: "s10",
+          source: "zoom",
+          custom_tag: "",
+          topic: "Renewal risks",
+          participants: [],
+        };
+      }
+      if (cmd === "search_session_artifacts") {
+        if ((args as { query?: string } | undefined)?.query === "acme renewal risk") {
+          return {
+            s10: { transcript_match: true, summary_match: false },
+          };
+        }
+        return {};
+      }
+      if (cmd === "read_session_artifact") {
+        expect(args).toEqual({ sessionId: "s10", artifactKind: "transcript" });
+        return {
+          path: "/tmp/s10/transcript.txt",
+          text: "Agenda\nACME renewal risk blocks legal approval\nNext steps",
+        };
+      }
+      if (cmd === "open_session_artifact") {
+        throw new Error("external open should not be used for matched artifact preview");
+      }
+      return null;
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Refresh sessions" }));
+    await user.type(screen.getByLabelText("Search sessions"), "acme renewal risk");
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "текст" })).toHaveClass("match-hit");
+    });
+
+    await user.click(screen.getByRole("button", { name: "текст" }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("read_session_artifact", {
+        sessionId: "s10",
+        artifactKind: "transcript",
+      });
+    });
+
+    expect(await screen.findByRole("dialog", { name: "Просмотр артефакта" })).toBeInTheDocument();
+    expect(screen.getByText("/tmp/s10/transcript.txt")).toBeInTheDocument();
+    expect(screen.getByText("ACME renewal risk", { selector: "mark" })).toBeInTheDocument();
+  });
+
   it("focuses Search sessions on Cmd/Ctrl+F", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -491,6 +589,7 @@ describe("App main window", () => {
           summary_url: "",
           summary_prompt: "",
           openai_model: "gpt-4.1-mini",
+          audio_format: "opus",
           opus_bitrate_kbps: 24,
           mic_device_name: "",
           system_device_name: "",
@@ -575,6 +674,7 @@ describe("App main window", () => {
           summary_url: "",
           summary_prompt: "",
           openai_model: "gpt-4.1-mini",
+          audio_format: "opus",
           opus_bitrate_kbps: 24,
           mic_device_name: "",
           system_device_name: "",

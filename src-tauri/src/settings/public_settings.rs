@@ -15,6 +15,7 @@ pub struct PublicSettings {
     pub summary_url: String,
     pub summary_prompt: String,
     pub openai_model: String,
+    pub audio_format: String,
     pub opus_bitrate_kbps: u32,
     pub mic_device_name: String,
     pub system_device_name: String,
@@ -34,6 +35,7 @@ impl Default for PublicSettings {
             summary_url: String::new(),
             summary_prompt: "Есть стенограмма встречи. Подготовь краткое саммари.".to_string(),
             openai_model: "gpt-4.1-mini".to_string(),
+            audio_format: "opus".to_string(),
             opus_bitrate_kbps: 24,
             mic_device_name: String::new(),
             system_device_name: String::new(),
@@ -54,6 +56,12 @@ impl PublicSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !matches!(
+            self.audio_format.as_str(),
+            "opus" | "mp3" | "m4a" | "ogg" | "wav"
+        ) {
+            return Err("Invalid audio format".to_string());
+        }
         if !self.transcription_url.is_empty() {
             Self::parse_http_url(&self.transcription_url, "transcription")?;
         }
@@ -150,6 +158,7 @@ mod tests {
             "summary_url":"",
             "summary_prompt":"Есть стенограмма встречи. Подготовь краткое саммари.",
             "openai_model":"gpt-4.1-mini",
+            "audio_format":"opus",
             "opus_bitrate_kbps":24,
             "mic_device_name":"",
             "system_device_name":""
@@ -171,6 +180,7 @@ mod tests {
             "transcription_url":"",
             "summary_url":"",
             "openai_model":"gpt-4.1-mini",
+            "audio_format":"opus",
             "opus_bitrate_kbps":24,
             "mic_device_name":"",
             "system_device_name":""
@@ -190,6 +200,7 @@ mod tests {
             "transcription_diarization_setting":"general",
             "summary_url":"",
             "openai_model":"gpt-4.1-mini",
+            "audio_format":"opus",
             "opus_bitrate_kbps":24,
             "mic_device_name":"",
             "system_device_name":""
@@ -211,6 +222,7 @@ mod tests {
             "summary_url":"",
             "summary_prompt":"Есть стенограмма встречи. Подготовь краткое саммари.",
             "openai_model":"gpt-4.1-mini",
+            "audio_format":"opus",
             "opus_bitrate_kbps":24,
             "mic_device_name":"",
             "system_device_name":"",
@@ -219,5 +231,35 @@ mod tests {
         }"#;
         let parsed: PublicSettings = serde_json::from_str(body).expect("settings should parse");
         assert_eq!(parsed.artifact_open_app, "");
+    }
+
+    #[test]
+    fn missing_audio_format_uses_default() {
+        let body = r#"{
+            "recording_root":"./recordings",
+            "artifact_open_app":"",
+            "transcription_url":"",
+            "transcription_task":"transcribe",
+            "transcription_diarization_setting":"general",
+            "summary_url":"",
+            "summary_prompt":"Есть стенограмма встречи. Подготовь краткое саммари.",
+            "openai_model":"gpt-4.1-mini",
+            "opus_bitrate_kbps":24,
+            "mic_device_name":"",
+            "system_device_name":"",
+            "auto_run_pipeline_on_stop":false,
+            "api_call_logging_enabled":false
+        }"#;
+        let parsed: PublicSettings = serde_json::from_str(body).expect("settings should parse");
+        assert_eq!(parsed.audio_format, "opus");
+    }
+
+    #[test]
+    fn rejects_unknown_audio_format() {
+        let s = PublicSettings {
+            audio_format: "flac".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(s.validate(), Err("Invalid audio format".to_string()));
     }
 }

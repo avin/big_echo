@@ -68,7 +68,7 @@ pub fn start_recording(
 
     let mut meta = meta;
     meta.artifacts = SessionArtifacts {
-        audio_file: "audio.opus".to_string(),
+        audio_file: crate::audio::file_writer::audio_file_name(&settings.audio_format),
         transcript_file: transcript_name(started_at),
         summary_file: summary_name(started_at),
         meta_file: "meta.json".to_string(),
