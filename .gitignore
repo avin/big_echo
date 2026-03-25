@@ -4,3 +4,5 @@ src/.DS_Store
 node_modules
 src-tauri/target
 dist
+.idea
+.vscode
